@@ -21,7 +21,7 @@ async function startServer() {
     const distDir = path.resolve(process.cwd(), 'dist');
     const indexHtml = path.resolve(distDir, 'index.html');
     app.use(express.static(distDir));
-    app.get('/{*splat}', (_req: Request, res: Response) => {
+    app.get('*', (_req: Request, res: Response) => {
       if (fs.existsSync(indexHtml)) {
         res.sendFile(indexHtml);
       } else {
