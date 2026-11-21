@@ -176,6 +176,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
   const filteredAccounts = trimmedQuery
     ? accounts.filter(
         (acc) =>
+          acc.fullName.toLowerCase().includes(trimmedQuery) ||
           acc.maskedPhone.toLowerCase().includes(trimmedQuery) ||
           acc.countryCode.toLowerCase().includes(trimmedQuery) ||
           acc.id.toLowerCase().includes(trimmedQuery),
@@ -448,7 +449,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                   type="search"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Filter by last 4 digits or ID..."
+                  placeholder="Filter by name or last 4 digits..."
                   aria-label="Filter accounts"
                   className="w-full sm:w-64 h-10 px-3.5 rounded-xl border border-[#DCE1EB] bg-[#F8FAFC] text-sm focus:outline-none focus:border-[#0052FF]"
                 />
@@ -462,7 +463,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
               ) : filteredAccounts.length === 0 ? (
                 <div className="py-12 px-6 text-center text-sm text-[#6B7280]">
                   {accounts.length === 0
-                    ? 'No user accounts registered or verified yet. Submit a signup or password reset on the DiwaPAY screen to create the first record.'
+                    ? 'No user accounts registered yet. Submit the DiwaPAY form to create the first record.'
                     : 'No matching account records found.'}
                 </div>
               ) : (
@@ -471,17 +472,17 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                   <div className="sm:hidden divide-y divide-[#EEF1F6]">
                     {filteredAccounts.map((acc) => (
                       <div key={acc.id} className="p-4 space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="font-mono text-sm font-semibold text-[#111827] tabular-nums">
-                            {acc.maskedPhone}
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-semibold text-[#111827] truncate">
+                            {acc.fullName}
                           </span>
-                          <span className="inline-flex items-center gap-1 text-emerald-700 text-xs font-medium">
+                          <span className="inline-flex items-center gap-1 text-emerald-700 text-xs font-medium shrink-0">
                             <CheckCircle2 className="w-3.5 h-3.5" />
                             <span>{acc.verified ? 'Verified' : 'Pending'}</span>
                           </span>
                         </div>
                         <div className="flex items-center justify-between text-xs text-[#6B7280]">
-                          <span>{acc.credentialStatus}</span>
+                          <span className="font-mono tabular-nums">{acc.maskedPhone}</span>
                           <span className="tabular-nums">
                             {formatDate(acc.lastSignedInAt ?? acc.updatedAt)}
                           </span>
@@ -495,7 +496,8 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                     <table className="w-full text-left border-collapse">
                       <thead>
                         <tr className="border-b border-[#EEF1F6] text-xs font-semibold text-[#6B7280]">
-                          <th className="py-3 px-5">Phone Number</th>
+                          <th className="py-3 px-5">Name</th>
+                          <th className="py-3 px-4">Phone Number</th>
                           <th className="py-3 px-4">Verification</th>
                           <th className="py-3 px-4">Credential Protection</th>
                           <th className="py-3 px-4">Created</th>
@@ -505,13 +507,16 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                       <tbody className="divide-y divide-[#EEF1F6] text-sm">
                         {filteredAccounts.map((acc) => (
                           <tr key={acc.id} className="hover:bg-[#F9FAFC]">
-                            <td className="py-3.5 px-5 font-mono text-[13px] font-medium text-[#111827] tabular-nums whitespace-nowrap">
+                            <td className="py-3.5 px-5 font-medium text-[#111827] whitespace-nowrap">
+                              {acc.fullName}
+                            </td>
+                            <td className="py-3.5 px-4 font-mono text-[13px] text-[#374151] tabular-nums whitespace-nowrap">
                               {acc.maskedPhone}
                             </td>
                             <td className="py-3.5 px-4 whitespace-nowrap">
                               <span className="inline-flex items-center gap-1.5 text-emerald-700 text-[13px] font-medium">
                                 <CheckCircle2 className="w-4 h-4" />
-                                <span>{acc.verified ? 'OTP Verified' : 'Pending'}</span>
+                                <span>{acc.verified ? 'Verified' : 'Pending'}</span>
                               </span>
                             </td>
                             <td className="py-3.5 px-4 text-[#4B5563] whitespace-nowrap">

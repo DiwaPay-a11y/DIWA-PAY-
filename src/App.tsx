@@ -6,8 +6,9 @@ import type { AuthFormState, AuthMode, SafeUserSummary, SmsMessage } from './typ
 
 export default function App() {
   const [pathname, setPathname] = useState(() => window.location.pathname);
-  const [mode, setMode] = useState<AuthMode>('reset');
+  const [mode, setMode] = useState<AuthMode>('register');
   const [form, setForm] = useState<AuthFormState>({
+    name: '',
     countryCode: '+91',
     phone: '',
     password: '',
@@ -65,7 +66,7 @@ export default function App() {
         body: JSON.stringify({
           countryCode: form.countryCode,
           phone: form.phone,
-          purpose: mode === 'signup' ? 'signup' : 'reset',
+          purpose: 'reset',
         }),
       });
 
@@ -119,17 +120,17 @@ export default function App() {
       setUserToken(result.token);
     }
 
-    if (mode === 'reset') {
+    if (mode === 'register') {
+      setCompletedMessage(
+        `Welcome ${result.user.fullName}. Your DiwaPAY account (${result.user.maskedPhone}) has been saved securely.`,
+      );
+    } else if (mode === 'reset') {
       setCompletedMessage(
         `Your password for ${result.user.maskedPhone} has been securely updated on the server. You can now sign in with your new credentials.`,
       );
-    } else if (mode === 'signup') {
-      setCompletedMessage(
-        `Welcome to DiwaPAY. Account ${result.user.maskedPhone} is verified and saved securely.`,
-      );
     } else {
       setCompletedMessage(
-        `Authenticated as ${result.user.maskedPhone}. Your DiwaPAY session is active.`,
+        `Welcome back, ${result.user.fullName} (${result.user.maskedPhone}). Your DiwaPAY session is active.`,
       );
     }
   };

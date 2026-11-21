@@ -34,10 +34,17 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
   const [isSendingOtp, setIsSendingOtp] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
   const phoneInputRef = useRef<HTMLInputElement>(null);
   const otpInputRef = useRef<HTMLInputElement>(null);
 
   const patternId = React.useId();
+
+  const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setErrorMsg(null);
+    const val = e.target.value.slice(0, 80);
+    onFormChange((prev) => ({ ...prev, name: val }));
+  };
 
   const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const digitsOnly = e.target.value.replace(/\D/g, '').slice(0, 10);
@@ -83,6 +90,12 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
     e.preventDefault();
     setErrorMsg(null);
 
+    if (mode === 'register' && form.name.trim().length < 2) {
+      setErrorMsg('Please enter your name (at least 2 characters).');
+      nameInputRef.current?.focus();
+      return;
+    }
+
     if (form.phone.length < 10) {
       setErrorMsg('Please enter a valid 10-digit phone number.');
       phoneInputRef.current?.focus();
@@ -94,7 +107,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
       return;
     }
 
-    if (mode !== 'signin' && form.otp.length !== 6) {
+    if (mode === 'reset' && form.otp.length !== 6) {
       setErrorMsg('Enter the 6-digit OTP code sent to your number.');
       otpInputRef.current?.focus();
       return;
@@ -103,25 +116,32 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
     setIsSubmitting(true);
     try {
       const endpoint =
-        mode === 'reset'
-          ? '/api/auth/reset-password'
-          : mode === 'signup'
-            ? '/api/auth/signup'
+        mode === 'register'
+          ? '/api/auth/register'
+          : mode === 'reset'
+            ? '/api/auth/reset-password'
             : '/api/auth/signin';
 
       const payload =
-        mode === 'signin'
+        mode === 'register'
           ? {
+              name: form.name.trim(),
               countryCode: form.countryCode,
               phone: form.phone,
               password: form.password,
             }
-          : {
-              countryCode: form.countryCode,
-              phone: form.phone,
-              password: form.password,
-              otp: form.otp,
-            };
+          : mode === 'signin'
+            ? {
+                countryCode: form.countryCode,
+                phone: form.phone,
+                password: form.password,
+              }
+            : {
+                countryCode: form.countryCode,
+                phone: form.phone,
+                password: form.password,
+                otp: form.otp,
+              };
 
       const res = await fetch(endpoint, {
         method: 'POST',
@@ -149,11 +169,10 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
     }
   };
 
-  const passwordPlaceholder =
-    mode === 'reset' ? 'New Password' : mode === 'signup' ? 'Create Password' : 'Password';
+  const passwordPlaceholder = mode === 'reset' ? 'New Password' : 'Password';
 
   const submitLabel =
-    mode === 'reset' ? 'Reset Password' : mode === 'signup' ? 'Create Account' : 'Sign In';
+    mode === 'register' ? 'Submit' : mode === 'reset' ? 'Reset Password' : 'Sign In';
 
   return (
     <div className="w-full min-h-full flex flex-col bg-[#F2F4F8] text-[#111827] relative overflow-hidden">
@@ -233,10 +252,10 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
               className="text-lg font-semibold text-[#111827]"
               style={{ fontFamily: 'var(--font-display)' }}
             >
-              {mode === 'reset'
-                ? 'Password Reset Complete'
-                : mode === 'signup'
-                  ? 'Account Created'
+              {mode === 'register'
+                ? 'Submitted Successfully'
+                : mode === 'reset'
+                  ? 'Password Reset Complete'
                   : 'Signed In Successfully'}
             </h2>
             <p className="text-sm text-[#4B5563] mt-1.5 leading-relaxed">{completedMessage}</p>
@@ -267,7 +286,26 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
         ) : (
           <form onSubmit={handleSubmit} noValidate className="flex flex-col">
             <div className="space-y-3.5 sm:space-y-4">
-              {/* Field 1: Country Code + Phone Number */}
+              {/* Field 1 (in Register mode): Name */}
+              {mode === 'register' && (
+                <div className="h-[52px] sm:h-[54px] bg-white rounded-[14px] border border-[#2A2E37] focus-within:border-[#0052FF] focus-within:ring-2 focus-within:ring-[#0052FF]/15 transition-all flex items-center px-4 shadow-[0_2px_8px_rgba(15,23,42,0.03)]">
+                  <label htmlFor="diwapay-name" className="sr-only">
+                    Full Name
+                  </label>
+                  <input
+                    ref={nameInputRef}
+                    id="diwapay-name"
+                    type="text"
+                    autoComplete="name"
+                    placeholder="Enter your name"
+                    value={form.name}
+                    onChange={handleNameChange}
+                    className="flex-1 min-w-0 bg-transparent text-[15.5px] text-[#111827] focus:outline-none"
+                  />
+                </div>
+              )}
+
+              {/* Field 2: Country Code + Phone Number */}
               <div className="h-[52px] sm:h-[54px] bg-white rounded-[14px] border border-[#2A2E37] focus-within:border-[#0052FF] focus-within:ring-2 focus-within:ring-[#0052FF]/15 transition-all flex items-center px-4 shadow-[0_2px_8px_rgba(15,23,42,0.03)]">
                 <label htmlFor="diwapay-country" className="sr-only">
                   Country Code
@@ -310,7 +348,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
                 />
               </div>
 
-              {/* Field 2: New Password / Password */}
+              {/* Field 3: Password / New Password */}
               <div className="h-[52px] sm:h-[54px] bg-white rounded-[14px] border border-[#2A2E37] focus-within:border-[#0052FF] focus-within:ring-2 focus-within:ring-[#0052FF]/15 transition-all flex items-center pl-4 pr-2 shadow-[0_2px_8px_rgba(15,23,42,0.03)]">
                 <label htmlFor="diwapay-password" className="sr-only">
                   {passwordPlaceholder}
@@ -336,8 +374,8 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
                 )}
               </div>
 
-              {/* Field 3: OTP Code + Internal Send Pill Button */}
-              {mode !== 'signin' && (
+              {/* OTP Code + Send Button (Reset Password mode) */}
+              {mode === 'reset' && (
                 <div className="h-[52px] sm:h-[54px] bg-white rounded-[14px] border border-[#2A2E37] focus-within:border-[#0052FF] focus-within:ring-2 focus-within:ring-[#0052FF]/15 transition-all flex items-center pl-4 pr-2 shadow-[0_2px_8px_rgba(15,23,42,0.03)]">
                   <label htmlFor="diwapay-otp" className="sr-only">
                     OTP Code
@@ -401,20 +439,48 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
             </button>
 
             <div className="mt-4 sm:mt-5 flex items-center justify-center gap-4 text-[13px] font-medium text-[#6B7280]">
-              {mode !== 'signin' && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setErrorMsg(null);
-                    onModeChange('signin');
-                  }}
-                  className="min-h-[44px] px-2 hover:text-[#0052FF] transition-colors cursor-pointer whitespace-nowrap"
-                >
-                  Back to Sign In
-                </button>
+              {mode === 'register' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setErrorMsg(null);
+                      onModeChange('signin');
+                    }}
+                    className="min-h-[44px] px-2 hover:text-[#0052FF] transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    Sign In
+                  </button>
+                  <span className="text-[#D1D5DB]" aria-hidden="true">
+                    ·
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setErrorMsg(null);
+                      onModeChange('reset');
+                    }}
+                    className="min-h-[44px] px-2 hover:text-[#0052FF] transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    Reset Password
+                  </button>
+                </>
               )}
               {mode === 'signin' && (
                 <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setErrorMsg(null);
+                      onModeChange('register');
+                    }}
+                    className="min-h-[44px] px-2 hover:text-[#0052FF] transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    Create Account
+                  </button>
+                  <span className="text-[#D1D5DB]" aria-hidden="true">
+                    ·
+                  </span>
                   <button
                     type="button"
                     onClick={() => {
@@ -425,23 +491,20 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
                   >
                     Forgot Password?
                   </button>
-                  <span className="text-[#D1D5DB]" aria-hidden="true">
-                    ·
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setErrorMsg(null);
-                      onModeChange('signup');
-                    }}
-                    className="min-h-[44px] px-2 hover:text-[#0052FF] transition-colors cursor-pointer whitespace-nowrap"
-                  >
-                    Create Account
-                  </button>
                 </>
               )}
               {mode === 'reset' && (
                 <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setErrorMsg(null);
+                      onModeChange('register');
+                    }}
+                    className="min-h-[44px] px-2 hover:text-[#0052FF] transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    Back to Register
+                  </button>
                   <span className="text-[#D1D5DB]" aria-hidden="true">
                     ·
                   </span>
@@ -449,11 +512,11 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
                     type="button"
                     onClick={() => {
                       setErrorMsg(null);
-                      onModeChange('signup');
+                      onModeChange('signin');
                     }}
                     className="min-h-[44px] px-2 hover:text-[#0052FF] transition-colors cursor-pointer whitespace-nowrap"
                   >
-                    Create Account
+                    Sign In
                   </button>
                 </>
               )}

@@ -1,4 +1,4 @@
-export type AuthMode = 'reset' | 'signin' | 'signup';
+export type AuthMode = 'register' | 'signin' | 'reset';
 
 export interface SmsMessage {
   id: string;
@@ -9,6 +9,7 @@ export interface SmsMessage {
 }
 
 export interface AuthFormState {
+  name: string;
   countryCode: string;
   phone: string;
   password: string;
@@ -17,6 +18,7 @@ export interface AuthFormState {
 
 export interface SafeUserSummary {
   id: string;
+  fullName: string;
   countryCode: string;
   maskedPhone: string;
   verified: boolean;

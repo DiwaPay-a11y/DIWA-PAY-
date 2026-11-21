@@ -47,9 +47,23 @@ function normalizePhoneInput(
   };
 }
 
+function normalizeNameInput(
+  nameRaw: unknown,
+): { ok: true; fullName: string } | { ok: false; error: string } {
+  if (typeof nameRaw !== 'string') {
+    return { ok: false, error: 'Please enter your full name.' };
+  }
+  const cleaned = nameRaw.trim().replace(/\s+/g, ' ');
+  if (cleaned.length < 2 || cleaned.length > 80) {
+    return { ok: false, error: 'Name must be between 2 and 80 characters.' };
+  }
+  return { ok: true, fullName: cleaned };
+}
+
 function toSafeUser(user: StoredUser) {
   return {
     id: user.id,
+    fullName: user.fullName || 'DiwaPAY User',
     countryCode: user.countryCode,
     maskedPhone: user.maskedPhone,
     verified: user.verified,
@@ -142,6 +156,64 @@ export function createApiRouter() {
     res.json({ ok: true, service: 'diwapay-auth' });
   });
 
+  router.post('/auth/register', (req: Request, res: Response) => {
+    const body = req.body as Record<string, unknown>;
+    const validName = normalizeNameInput(body?.name);
+    if (!validName.ok) {
+      res.status(400).json({ ok: false, error: validName.error });
+      return;
+    }
+
+    const normalized = normalizePhoneInput(body?.countryCode, body?.phone);
+    if (!normalized.ok) {
+      res.status(400).json({ ok: false, error: normalized.error });
+      return;
+    }
+
+    const password = body?.password;
+    if (typeof password !== 'string' || password.length < 6 || password.length > 128) {
+      res.status(400).json({ ok: false, error: 'Password must be between 6 and 128 characters.' });
+      return;
+    }
+
+    const store = readStore();
+    if (store.users[normalized.key]) {
+      res.status(409).json({
+        ok: false,
+        error: 'An account with this phone number already exists. Sign in instead.',
+      });
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+    const newUser: StoredUser = {
+      id: crypto.randomUUID(),
+      fullName: validName.fullName,
+      countryCode: normalized.countryCode,
+      maskedPhone: maskPhoneNumber(normalized.countryCode, normalized.phone),
+      passwordHash: hashPassword(password),
+      verified: true,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      lastSignedInAt: nowIso,
+    };
+
+    store.users[normalized.key] = newUser;
+    writeStore(store);
+
+    const token = signToken({
+      sub: newUser.id,
+      role: 'user',
+      maskedPhone: newUser.maskedPhone,
+    });
+
+    res.status(201).json({
+      ok: true,
+      token,
+      user: toSafeUser(newUser),
+    });
+  });
+
   router.post('/auth/send-otp', (req: Request, res: Response) => {
     const body = req.body as Record<string, unknown>;
     const normalized = normalizePhoneInput(body?.countryCode, body?.phone);
@@ -193,6 +265,12 @@ export function createApiRouter() {
 
   router.post('/auth/signup', (req: Request, res: Response) => {
     const body = req.body as Record<string, unknown>;
+    const validName = normalizeNameInput(body?.name);
+    if (!validName.ok) {
+      res.status(400).json({ ok: false, error: validName.error });
+      return;
+    }
+
     const normalized = normalizePhoneInput(body?.countryCode, body?.phone);
     if (!normalized.ok) {
       res.status(400).json({ ok: false, error: normalized.error });
@@ -223,6 +301,7 @@ export function createApiRouter() {
     const nowIso = new Date().toISOString();
     const newUser: StoredUser = {
       id: crypto.randomUUID(),
+      fullName: validName.fullName,
       countryCode: normalized.countryCode,
       maskedPhone: maskPhoneNumber(normalized.countryCode, normalized.phone),
       passwordHash: hashPassword(password),
@@ -282,6 +361,7 @@ export function createApiRouter() {
         }
       : {
           id: crypto.randomUUID(),
+          fullName: 'DiwaPAY User',
           countryCode: normalized.countryCode,
           maskedPhone: maskPhoneNumber(normalized.countryCode, normalized.phone),
           passwordHash: hashPassword(password),

@@ -3,6 +3,7 @@ import path from 'node:path';
 
 export interface StoredUser {
   id: string;
+  fullName: string;
   countryCode: string;
   maskedPhone: string;
   passwordHash: string;
