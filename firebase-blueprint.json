@@ -1,0 +1,95 @@
+{
+  "entities": {
+    "Account": {
+      "title": "Account",
+      "description": "Non-sensitive DiwaPAY account profile metadata stored in Firestore.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the account owner",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "fullName": {
+          "type": "string",
+          "description": "User full name",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "countryCode": {
+          "type": "string",
+          "description": "Dialing code",
+          "enum": ["+91", "+1", "+44", "+971", "+65"]
+        },
+        "maskedPhone": {
+          "type": "string",
+          "description": "Masked phone number for safe display",
+          "minLength": 6,
+          "maxLength": 24
+        },
+        "verified": {
+          "type": "boolean",
+          "description": "Whether the account is verified"
+        },
+        "credentialStatus": {
+          "type": "string",
+          "description": "Credential protection status (plaintext passwords are never stored)",
+          "enum": ["Protected"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp"
+        }
+      },
+      "required": [
+        "ownerUid",
+        "fullName",
+        "countryCode",
+        "maskedPhone",
+        "verified",
+        "credentialStatus",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdminRole": {
+      "title": "AdminRole",
+      "description": "Admin role allowlist marker document.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 160
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["email", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/accounts/{accountId}": {
+      "schema": {
+        "$ref": "#/entities/Account"
+      },
+      "description": "Account metadata records keyed by the owner's Firebase Auth UID."
+    },
+    "/admins/{adminId}": {
+      "schema": {
+        "$ref": "#/entities/AdminRole"
+      },
+      "description": "Admin role marker documents."
+    }
+  }
+}

@@ -1,6 +1,9 @@
 import React, { useRef, useState } from 'react';
 import { Eye, EyeOff, CheckCircle2, AlertCircle, Loader2, ArrowLeft } from 'lucide-react';
+import { signInWithPopup } from 'firebase/auth';
+import { doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { DiwaPayLogo } from './DiwaPayLogo';
+import { auth, db, googleProvider, handleFirestoreError, OperationType } from '../firebase';
 import type { AuthFormState, AuthMode, SafeUserSummary } from '../types/auth';
 
 interface DiwaPayScreenProps {
@@ -16,7 +19,11 @@ interface DiwaPayScreenProps {
   onResetCompleted: () => void;
 }
 
-const COUNTRY_CODES = ['+91', '+1', '+44', '+971', '+65'];
+const COUNTRY_CODES = ['+91', '+1', '+44', '+971', '+65'] as const;
+
+function maskPhone(countryCode: string, phone: string): string {
+  return `${countryCode} ••••••${phone.slice(-4)}`;
+}
 
 export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
   mode,
@@ -86,12 +93,87 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
     }
   };
 
+  const syncProfileToFirestore = async (
+    uid: string,
+    fullName: string,
+    countryCode: string,
+    phone: string,
+  ): Promise<SafeUserSummary> => {
+    const cleanName = fullName.trim().replace(/\s+/g, ' ').slice(0, 80);
+    const safeCountryCode = COUNTRY_CODES.includes(countryCode as (typeof COUNTRY_CODES)[number])
+      ? countryCode
+      : '+91';
+    const maskedPhone = maskPhone(safeCountryCode, phone);
+    const docPath = `accounts/${uid}`;
+    const accountRef = doc(db, 'accounts', uid);
+
+    let exists = false;
+    let existingName = cleanName;
+    try {
+      const snap = await getDoc(accountRef);
+      exists = snap.exists();
+      if (exists) {
+        const prevName = snap.data()?.fullName;
+        if (typeof prevName === 'string' && prevName.length >= 2 && cleanName.length < 2) {
+          existingName = prevName;
+        }
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, docPath);
+    }
+
+    const finalName = existingName.length >= 2 ? existingName : 'DiwaPAY User';
+
+    if (!exists) {
+      try {
+        await setDoc(accountRef, {
+          ownerUid: uid,
+          fullName: finalName,
+          countryCode: safeCountryCode,
+          maskedPhone,
+          verified: true,
+          credentialStatus: 'Protected',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, docPath);
+      }
+    } else {
+      try {
+        await updateDoc(accountRef, {
+          ...(cleanName.length >= 2 ? { fullName: cleanName } : {}),
+          countryCode: safeCountryCode,
+          maskedPhone,
+          verified: true,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, docPath);
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    return {
+      id: uid,
+      fullName: finalName,
+      countryCode: safeCountryCode,
+      maskedPhone,
+      verified: true,
+      credentialStatus: 'Protected',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      lastSignedInAt: nowIso,
+    };
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
 
-    if (mode === 'register' && form.name.trim().length < 2) {
-      setErrorMsg('Please enter your name (at least 2 characters).');
+    const trimmedName = form.name.trim().replace(/\s+/g, ' ');
+    if (mode === 'register' && (trimmedName.length < 2 || trimmedName.length > 80)) {
+      setErrorMsg('Please enter your name (2 to 80 characters).');
       nameInputRef.current?.focus();
       return;
     }
@@ -102,8 +184,8 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
       return;
     }
 
-    if (form.password.length < 6) {
-      setErrorMsg('Password must be at least 6 characters long.');
+    if (form.password.length < 6 || form.password.length > 128) {
+      setErrorMsg('Password must be between 6 and 128 characters.');
       return;
     }
 
@@ -115,6 +197,31 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
 
     setIsSubmitting(true);
     try {
+      // 1. Ensure verified Firebase Auth session so Firestore writes pass security rules
+      let currentUser = auth.currentUser;
+      if (!currentUser || !currentUser.emailVerified) {
+        try {
+          const cred = await signInWithPopup(auth, googleProvider);
+          currentUser = cred.user;
+        } catch (authErr) {
+          const code = (authErr as { code?: string })?.code;
+          if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+            setErrorMsg('Sign in with Google was cancelled. Complete sign-in to save to Firestore.');
+          } else if (code === 'auth/popup-blocked') {
+            setErrorMsg('Popup was blocked by browser. Allow popups to save to Firestore.');
+          } else {
+            setErrorMsg('Google sign-in is required to verify your Firestore session.');
+          }
+          return;
+        }
+      }
+
+      if (!currentUser || !currentUser.emailVerified) {
+        setErrorMsg('A verified Google account is required to save records.');
+        return;
+      }
+
+      // 2. Verify/hash credentials via backend API when available
       const endpoint =
         mode === 'register'
           ? '/api/auth/register'
@@ -125,7 +232,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
       const payload =
         mode === 'register'
           ? {
-              name: form.name.trim(),
+              name: trimmedName,
               countryCode: form.countryCode,
               phone: form.phone,
               password: form.password,
@@ -143,27 +250,48 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
                 otp: form.otp,
               };
 
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      const data = (await res.json()) as {
-        ok: boolean;
-        user?: SafeUserSummary;
-        token?: string;
-        error?: string;
-      };
-
-      if (!res.ok || !data.ok || !data.user) {
-        setErrorMsg(data.error ?? 'Request failed. Please verify your details.');
-        return;
+      let backendToken: string | undefined;
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = (await res.json()) as {
+          ok: boolean;
+          token?: string;
+          error?: string;
+        };
+        if (!res.ok || !data.ok) {
+          // If reset/signin failed validation on backend (e.g. wrong OTP or wrong password), surface error
+          if (mode === 'reset' || mode === 'signin') {
+            setErrorMsg(data.error ?? 'Verification failed. Check your details.');
+            return;
+          }
+          // In register mode, allow Firestore profile update if phone already existed in local cache
+          if (res.status !== 409) {
+            setErrorMsg(data.error ?? 'Request failed. Please verify your details.');
+            return;
+          }
+        } else {
+          backendToken = data.token;
+        }
+      } catch {
+        if (mode === 'reset') {
+          setErrorMsg('Unable to verify OTP with server.');
+          return;
+        }
       }
 
-      onSubmitSuccess({ user: data.user, token: data.token });
-    } catch {
-      setErrorMsg('Unable to reach server. Please try again.');
+      // 3. Persist non-sensitive profile metadata permanently in Cloud Firestore
+      const firestoreUser = await syncProfileToFirestore(
+        currentUser.uid,
+        trimmedName || currentUser.displayName || 'DiwaPAY User',
+        form.countryCode,
+        form.phone,
+      );
+
+      onSubmitSuccess({ user: firestoreUser, token: backendToken });
     } finally {
       setIsSubmitting(false);
     }
@@ -253,7 +381,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
               style={{ fontFamily: 'var(--font-display)' }}
             >
               {mode === 'register'
-                ? 'Submitted Successfully'
+                ? 'Saved to Firestore'
                 : mode === 'reset'
                   ? 'Password Reset Complete'
                   : 'Signed In Successfully'}
@@ -297,6 +425,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
                     id="diwapay-name"
                     type="text"
                     autoComplete="name"
+                    maxLength={80}
                     placeholder="Enter your name"
                     value={form.name}
                     onChange={handleNameChange}
@@ -431,7 +560,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
               {isSubmitting ? (
                 <>
                   <Loader2 className="w-5 h-5 animate-spin" />
-                  <span>Processing...</span>
+                  <span>Saving...</span>
                 </>
               ) : (
                 submitLabel
