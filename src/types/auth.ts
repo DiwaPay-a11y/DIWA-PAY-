@@ -14,3 +14,20 @@ export interface AuthFormState {
   password: string;
   otp: string;
 }
+
+export interface SafeUserSummary {
+  id: string;
+  countryCode: string;
+  maskedPhone: string;
+  verified: boolean;
+  credentialStatus: string;
+  createdAt: string;
+  updatedAt: string;
+  lastSignedInAt: string | null;
+}
+
+export interface AdminStatusResponse {
+  ok: boolean;
+  configured: boolean;
+  source: 'env' | 'claimed' | 'unconfigured';
+}

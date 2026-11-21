@@ -1,7 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { Eye, EyeOff, CheckCircle2, AlertCircle, Loader2, ArrowLeft } from 'lucide-react';
 import { DiwaPayLogo } from './DiwaPayLogo';
-import type { AuthFormState, AuthMode } from '../types/auth';
+import type { AuthFormState, AuthMode, SafeUserSummary } from '../types/auth';
 
 interface DiwaPayScreenProps {
   mode: AuthMode;
@@ -10,9 +10,8 @@ interface DiwaPayScreenProps {
   onFormChange: (updater: (prev: AuthFormState) => AuthFormState) => void;
   cooldown: number;
   hasSentOtp: boolean;
-  expectedOtp: string | null;
-  onSendOtp: () => void;
-  onSubmitSuccess: () => void;
+  onSendOtp: () => Promise<{ ok: boolean; error?: string }>;
+  onSubmitSuccess: (result: { user: SafeUserSummary; token?: string }) => void;
   completedMessage: string | null;
   onResetCompleted: () => void;
 }
@@ -26,13 +25,13 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
   onFormChange,
   cooldown,
   hasSentOtp,
-  expectedOtp,
   onSendOtp,
   onSubmitSuccess,
   completedMessage,
   onResetCompleted,
 }) => {
   const [showPassword, setShowPassword] = useState(false);
+  const [isSendingOtp, setIsSendingOtp] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const phoneInputRef = useRef<HTMLInputElement>(null);
@@ -57,20 +56,30 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
     onFormChange((prev) => ({ ...prev, otp: digitsOnly }));
   };
 
-  const handleSendClick = () => {
+  const handleSendClick = async () => {
     setErrorMsg(null);
     if (form.phone.length < 10) {
       setErrorMsg('Enter a valid 10-digit phone number to receive an OTP.');
       phoneInputRef.current?.focus();
       return;
     }
-    onSendOtp();
-    setTimeout(() => {
-      otpInputRef.current?.focus();
-    }, 60);
+
+    setIsSendingOtp(true);
+    try {
+      const result = await onSendOtp();
+      if (!result.ok) {
+        setErrorMsg(result.error ?? 'Failed to send OTP. Try again.');
+        return;
+      }
+      setTimeout(() => {
+        otpInputRef.current?.focus();
+      }, 60);
+    } finally {
+      setIsSendingOtp(false);
+    }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
 
@@ -85,28 +94,59 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
       return;
     }
 
-    if (mode !== 'signin') {
-      if (!expectedOtp) {
-        setErrorMsg('Tap Send to request a verification OTP code first.');
-        return;
-      }
-      if (form.otp.length !== 6) {
-        setErrorMsg('Enter the 6-digit OTP code sent to your number.');
-        otpInputRef.current?.focus();
-        return;
-      }
-      if (form.otp !== expectedOtp) {
-        setErrorMsg('The OTP code does not match. Check the latest SMS code.');
-        otpInputRef.current?.focus();
-        return;
-      }
+    if (mode !== 'signin' && form.otp.length !== 6) {
+      setErrorMsg('Enter the 6-digit OTP code sent to your number.');
+      otpInputRef.current?.focus();
+      return;
     }
 
     setIsSubmitting(true);
-    setTimeout(() => {
+    try {
+      const endpoint =
+        mode === 'reset'
+          ? '/api/auth/reset-password'
+          : mode === 'signup'
+            ? '/api/auth/signup'
+            : '/api/auth/signin';
+
+      const payload =
+        mode === 'signin'
+          ? {
+              countryCode: form.countryCode,
+              phone: form.phone,
+              password: form.password,
+            }
+          : {
+              countryCode: form.countryCode,
+              phone: form.phone,
+              password: form.password,
+              otp: form.otp,
+            };
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const data = (await res.json()) as {
+        ok: boolean;
+        user?: SafeUserSummary;
+        token?: string;
+        error?: string;
+      };
+
+      if (!res.ok || !data.ok || !data.user) {
+        setErrorMsg(data.error ?? 'Request failed. Please verify your details.');
+        return;
+      }
+
+      onSubmitSuccess({ user: data.user, token: data.token });
+    } catch {
+      setErrorMsg('Unable to reach server. Please try again.');
+    } finally {
       setIsSubmitting(false);
-      onSubmitSuccess();
-    }, 450);
+    }
   };
 
   const passwordPlaceholder =
@@ -119,7 +159,6 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
     <div className="w-full min-h-full flex flex-col bg-[#F2F4F8] text-[#111827] relative overflow-hidden">
       {/* Dark Obsidian Branded Header with Subtle Geometric Texture & Curved/Angled Bottom Edge */}
       <div className="relative w-full h-[clamp(210px,36dvh,276px)] shrink-0 select-none">
-        {/* Main dark obsidian container with rounded bottom-left corner */}
         <div
           className="absolute inset-0 rounded-bl-[28px] overflow-hidden"
           style={{
@@ -127,7 +166,6 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
               'radial-gradient(circle at 50% 44%, #1A1D24 0%, #101217 65%, #0B0D11 100%)',
           }}
         >
-          {/* Subtle tiled 'dp' geometric checkerboard texture matching reference */}
           <svg
             className="absolute inset-0 w-full h-full opacity-[0.045] pointer-events-none"
             xmlns="http://www.w3.org/2000/svg"
@@ -167,7 +205,6 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
             <rect width="100%" height="100%" fill={`url(#${patternId})`} />
           </svg>
 
-          {/* Bottom-right angled wedge cut matching the reference screenshot */}
           <svg
             className="absolute bottom-0 right-0 w-[132px] h-[64px] pointer-events-none"
             viewBox="0 0 132 64"
@@ -175,20 +212,17 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
             preserveAspectRatio="none"
             aria-hidden="true"
           >
-            {/* Soft cool-gray beveled triangle behind the cut */}
             <polygon points="132,10 132,64 16,64" fill="#E3E6EE" />
-            {/* Crisp canvas cut overlapping the bottom edge */}
             <polygon points="132,34 132,64 46,64" fill="#F2F4F8" />
           </svg>
         </div>
 
-        {/* Centered Gold Monogram & Wordmark */}
         <div className="relative z-10 h-full flex flex-col items-center justify-center pb-6">
           <DiwaPayLogo size="lg" showWordmark />
         </div>
       </div>
 
-      {/* Main Form Canvas (Overlaps the dark header boundary identically to reference) */}
+      {/* Main Form Canvas */}
       <div className="relative z-20 flex-1 px-5 sm:px-6 -mt-[28px] pb-6 flex flex-col justify-between">
         {completedMessage ? (
           <div className="bg-white rounded-[18px] border border-[#2A2E37]/15 shadow-[0_8px_28px_rgba(15,23,42,0.06)] p-6 text-center mt-2">
@@ -212,11 +246,13 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
                 type="button"
                 onClick={() => {
                   onResetCompleted();
-                  onModeChange('signin');
+                  if (mode !== 'signin') {
+                    onModeChange('signin');
+                  }
                 }}
                 className="w-full h-[50px] rounded-full bg-[#0052FF] hover:bg-[#0045D8] active:scale-[0.985] text-white font-semibold text-[15px] transition-all cursor-pointer"
               >
-                {mode === 'signin' ? 'Continue to Wallet' : 'Proceed to Sign In'}
+                {mode === 'signin' ? 'Done' : 'Proceed to Sign In'}
               </button>
               <button
                 type="button"
@@ -300,7 +336,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
                 )}
               </div>
 
-              {/* Field 3: OTP Code + Internal Send Pill Button (Reset & Sign Up modes) */}
+              {/* Field 3: OTP Code + Internal Send Pill Button */}
               {mode !== 'signin' && (
                 <div className="h-[52px] sm:h-[54px] bg-white rounded-[14px] border border-[#2A2E37] focus-within:border-[#0052FF] focus-within:ring-2 focus-within:ring-[#0052FF]/15 transition-all flex items-center pl-4 pr-2 shadow-[0_2px_8px_rgba(15,23,42,0.03)]">
                   <label htmlFor="diwapay-otp" className="sr-only">
@@ -322,16 +358,23 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
                   <button
                     type="button"
                     onClick={handleSendClick}
-                    disabled={cooldown > 0}
-                    className="h-[36px] sm:h-[38px] min-w-[84px] px-4 rounded-full bg-[#6B92F5] hover:bg-[#5780EC] disabled:bg-[#8DAEF8] disabled:cursor-not-allowed active:scale-[0.97] text-white text-[14px] font-medium tabular-nums transition-all cursor-pointer shrink-0 whitespace-nowrap"
+                    disabled={cooldown > 0 || isSendingOtp}
+                    className="h-[36px] sm:h-[38px] min-w-[84px] px-4 rounded-full bg-[#6B92F5] hover:bg-[#5780EC] disabled:bg-[#8DAEF8] disabled:cursor-not-allowed active:scale-[0.97] text-white text-[14px] font-medium tabular-nums transition-all cursor-pointer shrink-0 whitespace-nowrap flex items-center justify-center"
                   >
-                    {cooldown > 0 ? `${cooldown}s` : hasSentOtp ? 'Resend' : 'Send'}
+                    {isSendingOtp ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : cooldown > 0 ? (
+                      `${cooldown}s`
+                    ) : hasSentOtp ? (
+                      'Resend'
+                    ) : (
+                      'Send'
+                    )}
                   </button>
                 </div>
               )}
             </div>
 
-            {/* Inline Validation Feedback (Icon + Text, never hue-only) */}
             {errorMsg && (
               <div
                 role="alert"
@@ -342,7 +385,6 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
               </div>
             )}
 
-            {/* Primary Cobalt Blue Pill Action Button */}
             <button
               type="submit"
               disabled={isSubmitting}
@@ -358,7 +400,6 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
               )}
             </button>
 
-            {/* Subtle Mode Links (Clean unboxed typography) */}
             <div className="mt-4 sm:mt-5 flex items-center justify-center gap-4 text-[13px] font-medium text-[#6B7280]">
               {mode !== 'signin' && (
                 <button
