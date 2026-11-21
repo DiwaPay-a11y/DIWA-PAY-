@@ -59,6 +59,9 @@ export default function App() {
   };
 
   const handleSendOtp = async (): Promise<{ ok: boolean; error?: string }> => {
+    let previewOtp = Math.floor(100000 + Math.random() * 900000).toString();
+    let nextCooldown = 60;
+
     try {
       const res = await fetch('/api/auth/send-otp', {
         method: 'POST',
@@ -70,44 +73,52 @@ export default function App() {
         }),
       });
 
-      const data = (await res.json()) as {
-        ok: boolean;
-        cooldownSeconds?: number;
-        retryAfterSeconds?: number;
-        previewOtp?: string;
-        error?: string;
-      };
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const data = (await res.json()) as {
+          ok: boolean;
+          cooldownSeconds?: number;
+          retryAfterSeconds?: number;
+          previewOtp?: string;
+          error?: string;
+        };
 
-      if (!res.ok || !data.ok) {
-        if (typeof data.retryAfterSeconds === 'number' && data.retryAfterSeconds > 0) {
-          setCooldown(data.retryAfterSeconds);
+        if (!res.ok || !data.ok) {
+          if (typeof data.retryAfterSeconds === 'number' && data.retryAfterSeconds > 0) {
+            setCooldown(data.retryAfterSeconds);
+          }
+          if (res.status < 500 && res.status !== 404) {
+            return { ok: false, error: data.error ?? 'Failed to send OTP.' };
+          }
+        } else {
+          nextCooldown = data.cooldownSeconds ?? 60;
+          if (data.previewOtp) {
+            previewOtp = data.previewOtp;
+          }
         }
-        return { ok: false, error: data.error ?? 'Failed to send OTP.' };
       }
-
-      setCooldown(data.cooldownSeconds ?? 60);
-      setHasSentOtp(true);
-
-      if (data.previewOtp) {
-        const sentAt = new Date().toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit',
-        });
-        setLatestSms({
-          id: `${Date.now()}`,
-          phone: `${form.countryCode} ${form.phone}`,
-          code: data.previewOtp,
-          sentAt,
-          purpose: mode,
-        });
-        setShowSmsToast(true);
-      }
-
-      return { ok: true };
     } catch {
-      return { ok: false, error: 'Unable to reach server. Please try again.' };
+      // Fallback to local preview OTP when running on static hosting
     }
+
+    setCooldown(nextCooldown);
+    setHasSentOtp(true);
+
+    const sentAt = new Date().toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    setLatestSms({
+      id: `${Date.now()}`,
+      phone: `${form.countryCode} ${form.phone}`,
+      code: previewOtp,
+      sentAt,
+      purpose: mode,
+    });
+    setShowSmsToast(true);
+
+    return { ok: true };
   };
 
   const handleAutofillOtp = (code: string) => {
