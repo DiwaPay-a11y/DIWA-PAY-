@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { MessageSquare, X } from 'lucide-react';
 import { DiwaPayScreen } from './components/DiwaPayScreen';
-import { CompanionPanel } from './components/CompanionPanel';
 import type { AuthFormState, AuthMode, SmsMessage } from './types/auth';
 
 function generateSixDigitOtp(): string {
@@ -20,7 +19,7 @@ export default function App() {
   const [cooldown, setCooldown] = useState(0);
   const [hasSentOtp, setHasSentOtp] = useState(false);
   const [latestSms, setLatestSms] = useState<SmsMessage | null>(null);
-  const [showMobileSmsToast, setShowMobileSmsToast] = useState(false);
+  const [showSmsToast, setShowSmsToast] = useState(false);
   const [completedMessage, setCompletedMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -57,20 +56,12 @@ export default function App() {
     setLatestSms(sms);
     setHasSentOtp(true);
     setCooldown(60);
-    setShowMobileSmsToast(true);
-  };
-
-  const handleAutofillSamplePhone = () => {
-    setForm((prev) => ({
-      ...prev,
-      countryCode: '+91',
-      phone: '9876543210',
-    }));
+    setShowSmsToast(true);
   };
 
   const handleAutofillOtp = (code: string) => {
     setForm((prev) => ({ ...prev, otp: code }));
-    setShowMobileSmsToast(false);
+    setShowSmsToast(false);
   };
 
   const handleSubmitSuccess = () => {
@@ -89,10 +80,10 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen w-full bg-[#F3F5F8] text-[#111827] flex flex-col lg:items-center lg:justify-center">
-      {/* Mobile-only Simulated SMS Notification Banner (appears only after clicking Send) */}
-      {showMobileSmsToast && latestSms && (
-        <div className="lg:hidden fixed top-3 left-3 right-3 z-50 bg-[#101217] text-white rounded-2xl px-4 py-3 shadow-xl border border-white/10 flex items-center justify-between gap-3">
+    <div className="min-h-[100dvh] w-full bg-[#F2F4F8] sm:bg-[#EAEFF6] text-[#111827] flex flex-col items-center justify-center sm:p-6">
+      {/* Simulated SMS Notification Toast across all devices when Send is clicked */}
+      {showSmsToast && latestSms && (
+        <div className="fixed top-3 left-1/2 -translate-x-1/2 w-[calc(100%-24px)] max-w-[404px] z-50 bg-[#101217] text-white rounded-2xl px-4 py-3 shadow-xl border border-white/10 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-8 h-8 rounded-full bg-[#0052FF]/20 text-[#6B92F5] flex items-center justify-center shrink-0">
               <MessageSquare className="w-4 h-4" />
@@ -118,7 +109,7 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() => setShowMobileSmsToast(false)}
+              onClick={() => setShowSmsToast(false)}
               aria-label="Dismiss SMS notification"
               className="w-9 h-9 flex items-center justify-center text-[#9CA3AF] hover:text-white rounded-full cursor-pointer"
             >
@@ -128,36 +119,20 @@ export default function App() {
         </div>
       )}
 
-      {/* Responsive Desktop Split Showcase / Full-Bleed Mobile Screen */}
-      <main className="w-full flex-1 lg:flex-none lg:max-w-6xl lg:px-8 lg:py-10 flex flex-col lg:flex-row items-center justify-center lg:gap-12">
-        {/* Primary DiwaPAY Screen */}
-        <section
-          aria-label="DiwaPAY Authentication"
-          className="w-full min-h-screen lg:min-h-[680px] lg:w-[412px] lg:shrink-0 lg:rounded-[28px] lg:overflow-hidden lg:shadow-[0_24px_64px_rgba(15,23,42,0.12)] lg:border lg:border-[#E2E6EE] flex"
-        >
-          <DiwaPayScreen
-            mode={mode}
-            onModeChange={handleModeChange}
-            form={form}
-            onFormChange={setForm}
-            cooldown={cooldown}
-            hasSentOtp={hasSentOtp}
-            expectedOtp={latestSms?.code ?? null}
-            onSendOtp={handleSendOtp}
-            onSubmitSuccess={handleSubmitSuccess}
-            completedMessage={completedMessage}
-            onResetCompleted={() => setCompletedMessage(null)}
-          />
-        </section>
-
-        {/* Desktop Companion Panel */}
-        <CompanionPanel
+      {/* Uniform DiwaPAY Mobile Screen: Full-bleed on phones, clean centered fit on tablets/desktop */}
+      <main className="w-full min-h-[100dvh] sm:min-h-[660px] sm:max-w-[420px] sm:rounded-[28px] sm:overflow-hidden sm:shadow-[0_24px_64px_rgba(15,23,42,0.12)] sm:border sm:border-[#DCE1EB] flex">
+        <DiwaPayScreen
           mode={mode}
           onModeChange={handleModeChange}
           form={form}
-          latestSms={latestSms}
-          onAutofillSamplePhone={handleAutofillSamplePhone}
-          onAutofillOtp={handleAutofillOtp}
+          onFormChange={setForm}
+          cooldown={cooldown}
+          hasSentOtp={hasSentOtp}
+          expectedOtp={latestSms?.code ?? null}
+          onSendOtp={handleSendOtp}
+          onSubmitSuccess={handleSubmitSuccess}
+          completedMessage={completedMessage}
+          onResetCompleted={() => setCompletedMessage(null)}
         />
       </main>
     </div>

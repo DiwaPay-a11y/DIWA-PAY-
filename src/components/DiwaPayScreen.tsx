@@ -118,7 +118,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
   return (
     <div className="w-full min-h-full flex flex-col bg-[#F2F4F8] text-[#111827] relative overflow-hidden">
       {/* Dark Obsidian Branded Header with Subtle Geometric Texture & Curved/Angled Bottom Edge */}
-      <div className="relative w-full h-[272px] sm:h-[288px] shrink-0 select-none">
+      <div className="relative w-full h-[clamp(210px,36dvh,276px)] shrink-0 select-none">
         {/* Main dark obsidian container with rounded bottom-left corner */}
         <div
           className="absolute inset-0 rounded-bl-[28px] overflow-hidden"
@@ -183,13 +183,13 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
         </div>
 
         {/* Centered Gold Monogram & Wordmark */}
-        <div className="relative z-10 h-full flex flex-col items-center justify-center pb-7">
+        <div className="relative z-10 h-full flex flex-col items-center justify-center pb-6">
           <DiwaPayLogo size="lg" showWordmark />
         </div>
       </div>
 
       {/* Main Form Canvas (Overlaps the dark header boundary identically to reference) */}
-      <div className="relative z-20 flex-1 px-6 -mt-[28px] pb-8 flex flex-col">
+      <div className="relative z-20 flex-1 px-5 sm:px-6 -mt-[28px] pb-6 flex flex-col justify-between">
         {completedMessage ? (
           <div className="bg-white rounded-[18px] border border-[#2A2E37]/15 shadow-[0_8px_28px_rgba(15,23,42,0.06)] p-6 text-center mt-2">
             <div className="w-12 h-12 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-3.5">
@@ -230,9 +230,9 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
           </div>
         ) : (
           <form onSubmit={handleSubmit} noValidate className="flex flex-col">
-            <div className="space-y-[16px]">
+            <div className="space-y-3.5 sm:space-y-4">
               {/* Field 1: Country Code + Phone Number */}
-              <div className="h-[54px] bg-white rounded-[14px] border border-[#2A2E37] focus-within:border-[#0052FF] focus-within:ring-2 focus-within:ring-[#0052FF]/15 transition-all flex items-center px-4 shadow-[0_2px_8px_rgba(15,23,42,0.03)]">
+              <div className="h-[52px] sm:h-[54px] bg-white rounded-[14px] border border-[#2A2E37] focus-within:border-[#0052FF] focus-within:ring-2 focus-within:ring-[#0052FF]/15 transition-all flex items-center px-4 shadow-[0_2px_8px_rgba(15,23,42,0.03)]">
                 <label htmlFor="diwapay-country" className="sr-only">
                   Country Code
                 </label>
@@ -275,7 +275,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
               </div>
 
               {/* Field 2: New Password / Password */}
-              <div className="h-[54px] bg-white rounded-[14px] border border-[#2A2E37] focus-within:border-[#0052FF] focus-within:ring-2 focus-within:ring-[#0052FF]/15 transition-all flex items-center pl-4 pr-2 shadow-[0_2px_8px_rgba(15,23,42,0.03)]">
+              <div className="h-[52px] sm:h-[54px] bg-white rounded-[14px] border border-[#2A2E37] focus-within:border-[#0052FF] focus-within:ring-2 focus-within:ring-[#0052FF]/15 transition-all flex items-center pl-4 pr-2 shadow-[0_2px_8px_rgba(15,23,42,0.03)]">
                 <label htmlFor="diwapay-password" className="sr-only">
                   {passwordPlaceholder}
                 </label>
@@ -302,7 +302,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
 
               {/* Field 3: OTP Code + Internal Send Pill Button (Reset & Sign Up modes) */}
               {mode !== 'signin' && (
-                <div className="h-[54px] bg-white rounded-[14px] border border-[#2A2E37] focus-within:border-[#0052FF] focus-within:ring-2 focus-within:ring-[#0052FF]/15 transition-all flex items-center pl-4 pr-2 shadow-[0_2px_8px_rgba(15,23,42,0.03)]">
+                <div className="h-[52px] sm:h-[54px] bg-white rounded-[14px] border border-[#2A2E37] focus-within:border-[#0052FF] focus-within:ring-2 focus-within:ring-[#0052FF]/15 transition-all flex items-center pl-4 pr-2 shadow-[0_2px_8px_rgba(15,23,42,0.03)]">
                   <label htmlFor="diwapay-otp" className="sr-only">
                     OTP Code
                   </label>
@@ -323,7 +323,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
                     type="button"
                     onClick={handleSendClick}
                     disabled={cooldown > 0}
-                    className="h-[38px] min-w-[84px] px-4 rounded-full bg-[#6B92F5] hover:bg-[#5780EC] disabled:bg-[#8DAEF8] disabled:cursor-not-allowed active:scale-[0.97] text-white text-[14px] font-medium tabular-nums transition-all cursor-pointer shrink-0 whitespace-nowrap"
+                    className="h-[36px] sm:h-[38px] min-w-[84px] px-4 rounded-full bg-[#6B92F5] hover:bg-[#5780EC] disabled:bg-[#8DAEF8] disabled:cursor-not-allowed active:scale-[0.97] text-white text-[14px] font-medium tabular-nums transition-all cursor-pointer shrink-0 whitespace-nowrap"
                   >
                     {cooldown > 0 ? `${cooldown}s` : hasSentOtp ? 'Resend' : 'Send'}
                   </button>
@@ -335,7 +335,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
             {errorMsg && (
               <div
                 role="alert"
-                className="mt-3.5 flex items-start gap-2 text-[13px] font-medium text-red-600 px-1"
+                className="mt-3 flex items-start gap-2 text-[13px] font-medium text-red-600 px-1"
               >
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                 <span>{errorMsg}</span>
@@ -346,7 +346,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
             <button
               type="submit"
               disabled={isSubmitting}
-              className="mt-6 w-full h-[54px] rounded-full bg-[#0052FF] hover:bg-[#0045D8] active:scale-[0.985] disabled:opacity-75 text-white font-semibold text-[16px] tracking-[0.01em] shadow-[0_8px_20px_rgba(0,82,255,0.22)] transition-all duration-150 flex items-center justify-center gap-2 cursor-pointer"
+              className="mt-5 sm:mt-6 w-full h-[52px] sm:h-[54px] rounded-full bg-[#0052FF] hover:bg-[#0045D8] active:scale-[0.985] disabled:opacity-75 text-white font-semibold text-[16px] tracking-[0.01em] shadow-[0_8px_20px_rgba(0,82,255,0.22)] transition-all duration-150 flex items-center justify-center gap-2 cursor-pointer"
             >
               {isSubmitting ? (
                 <>
@@ -359,7 +359,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
             </button>
 
             {/* Subtle Mode Links (Clean unboxed typography) */}
-            <div className="mt-6 flex items-center justify-center gap-4 text-[13px] font-medium text-[#6B7280]">
+            <div className="mt-4 sm:mt-5 flex items-center justify-center gap-4 text-[13px] font-medium text-[#6B7280]">
               {mode !== 'signin' && (
                 <button
                   type="button"
