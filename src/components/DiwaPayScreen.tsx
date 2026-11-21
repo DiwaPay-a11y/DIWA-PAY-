@@ -209,8 +209,13 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
             setErrorMsg('Sign in with Google was cancelled. Complete sign-in to save to Firestore.');
           } else if (code === 'auth/popup-blocked') {
             setErrorMsg('Popup was blocked by browser. Allow popups to save to Firestore.');
+          } else if (code === 'auth/unauthorized-domain') {
+            setErrorMsg(
+              `Domain "${window.location.hostname}" is not authorized in Firebase Auth. Add it in Firebase Console → Authentication → Settings → Authorized domains.`,
+            );
           } else {
-            setErrorMsg('Google sign-in is required to verify your Firestore session.');
+            const detail = code ? ` (${code})` : '';
+            setErrorMsg(`Google sign-in is required to verify your Firestore session${detail}.`);
           }
           return;
         }
@@ -266,7 +271,12 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
           };
           if (res.ok && data.ok) {
             backendToken = data.token;
-          } else if ((mode === 'reset' || mode === 'signin') && res.status === 400) {
+          } else if (
+            res.status === 400 ||
+            res.status === 401 ||
+            res.status === 409 ||
+            res.status === 429
+          ) {
             setErrorMsg(data.error ?? 'Please check your entered details.');
             return;
           }
@@ -284,6 +294,19 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
       );
 
       onSubmitSuccess({ user: firestoreUser, token: backendToken });
+    } catch (err) {
+      let friendly = 'Unable to save account to Firestore. Please try again.';
+      if (err instanceof Error && err.message) {
+        try {
+          const parsed = JSON.parse(err.message) as { error?: string };
+          if (parsed.error) {
+            friendly = parsed.error;
+          }
+        } catch {
+          friendly = err.message;
+        }
+      }
+      setErrorMsg(friendly);
     } finally {
       setIsSubmitting(false);
     }

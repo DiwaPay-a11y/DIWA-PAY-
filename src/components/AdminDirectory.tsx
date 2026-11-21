@@ -151,8 +151,15 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
         setAuthError('Google sign-in was cancelled.');
       } else if (code === 'auth/popup-blocked') {
         setAuthError('Popup was blocked by browser. Please allow popups and try again.');
+      } else if (code === 'auth/unauthorized-domain') {
+        setAuthError(
+          `Domain "${window.location.hostname}" is not authorized in Firebase Auth. Add it in Firebase Console → Authentication → Settings → Authorized domains.`,
+        );
       } else {
-        setAuthError('Unable to sign in with Google. Check authorized domains in Firebase.');
+        const detail = code ? ` (${code})` : '';
+        setAuthError(
+          `Unable to sign in with Google${detail}. Check authorized domains in Firebase.`,
+        );
       }
     } finally {
       setSigningIn(false);
