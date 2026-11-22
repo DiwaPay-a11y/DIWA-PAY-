@@ -3,12 +3,16 @@ import {
   AlertCircle,
   ArrowLeft,
   CheckCircle2,
+  Eye,
+  EyeOff,
+  KeyRound,
   Loader2,
   LogIn,
   LogOut,
   ShieldAlert,
   ShieldCheck,
   Users,
+  X,
 } from 'lucide-react';
 import { onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
 import type { User } from 'firebase/auth';
@@ -30,7 +34,7 @@ import {
   OperationType,
   PRIMARY_ADMIN_EMAIL,
 } from '../firebase';
-import { listLocalUsers } from '../utils/localAuthFallback';
+import { fallbackUpdateUserPassword, listLocalUsers } from '../utils/localAuthFallback';
 import type { SafeUserSummary } from '../types/auth';
 
 interface AdminDirectoryProps {
@@ -96,6 +100,23 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
   const [accounts, setAccounts] = useState<SafeUserSummary[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Per-account password reset modal state
+  const [resetTarget, setResetTarget] = useState<SafeUserSummary | null>(null);
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [showUserPassword, setShowUserPassword] = useState(false);
+  const [resetSubmitting, setResetSubmitting] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+  const [resetSuccessMsg, setResetSuccessMsg] = useState<string | null>(null);
+
+  // Admin password change modal state
+  const [showAdminPassModal, setShowAdminPassModal] = useState(false);
+  const [currentAdminPass, setCurrentAdminPass] = useState('');
+  const [nextAdminPass, setNextAdminPass] = useState('');
+  const [showAdminPassText, setShowAdminPassText] = useState(false);
+  const [adminPassSubmitting, setAdminPassSubmitting] = useState(false);
+  const [adminPassError, setAdminPassError] = useState<string | null>(null);
+  const [adminPassSuccess, setAdminPassSuccess] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -316,6 +337,130 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
     setAccounts([]);
     setSearchQuery('');
     setIsAdmin(false);
+    setResetTarget(null);
+    setShowAdminPassModal(false);
+  };
+
+  const openResetPasswordModal = (account: SafeUserSummary) => {
+    setResetTarget(account);
+    setNewUserPassword('');
+    setShowUserPassword(false);
+    setResetError(null);
+    setResetSuccessMsg(null);
+  };
+
+  const handleResetUserPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resetTarget) return;
+    setResetError(null);
+    setResetSuccessMsg(null);
+
+    if (newUserPassword.length < 6 || newUserPassword.length > 128) {
+      setResetError('Password must be between 6 and 128 characters.');
+      return;
+    }
+
+    setResetSubmitting(true);
+    try {
+      let updatedOnServer = false;
+      let updatedUser: SafeUserSummary | null = null;
+
+      if (serverAdminToken && serverAdminToken !== 'local-fallback-admin') {
+        try {
+          const res = await fetch(`/api/admin/accounts/${encodeURIComponent(resetTarget.id)}/password`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${serverAdminToken}`,
+            },
+            body: JSON.stringify({ newPassword: newUserPassword }),
+          });
+          const ct = res.headers.get('content-type') || '';
+          if (ct.includes('application/json')) {
+            const data = (await res.json()) as {
+              ok?: boolean;
+              user?: SafeUserSummary;
+              error?: string;
+            };
+            if (res.ok && data.ok && data.user) {
+              updatedOnServer = true;
+              updatedUser = data.user;
+            } else if (res.status !== 404) {
+              setResetError(data.error ?? 'Failed to update password.');
+              return;
+            }
+          }
+        } catch {
+          // Fall through to local fallback update
+        }
+      }
+
+      const localResult = await fallbackUpdateUserPassword({
+        id: resetTarget.id,
+        countryCode: resetTarget.countryCode,
+        phoneNumber: resetTarget.phoneNumber,
+        newPassword: newUserPassword,
+      });
+
+      if (!updatedOnServer && !localResult.ok) {
+        setResetError(localResult.error);
+        return;
+      }
+
+      const mergedUpdate = updatedUser ?? (localResult.ok ? localResult.user : null);
+      if (mergedUpdate) {
+        setAccounts((prev) =>
+          prev.map((acc) => (acc.id === resetTarget.id ? { ...acc, ...mergedUpdate } : acc)),
+        );
+      }
+
+      setNewUserPassword('');
+      setResetSuccessMsg(`Password updated securely for ${resetTarget.fullName}.`);
+    } finally {
+      setResetSubmitting(false);
+    }
+  };
+
+  const handleChangeAdminPasscode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAdminPassError(null);
+    setAdminPassSuccess(null);
+
+    if (!currentAdminPass) {
+      setAdminPassError('Enter your current admin password.');
+      return;
+    }
+    if (nextAdminPass.length < 8 || nextAdminPass.length > 128) {
+      setAdminPassError('New admin password must be between 8 and 128 characters.');
+      return;
+    }
+
+    setAdminPassSubmitting(true);
+    try {
+      const res = await fetch('/api/admin/change-passcode', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${serverAdminToken}`,
+        },
+        body: JSON.stringify({
+          currentPasscode: currentAdminPass,
+          newPasscode: nextAdminPass,
+        }),
+      });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok || !data.ok) {
+        setAdminPassError(data.error ?? 'Unable to update admin password.');
+        return;
+      }
+      setCurrentAdminPass('');
+      setNextAdminPass('');
+      setAdminPassSuccess('Admin password updated successfully.');
+    } catch {
+      setAdminPassError('Unable to reach server.');
+    } finally {
+      setAdminPassSubmitting(false);
+    }
   };
 
   const trimmedQuery = searchQuery.trim().toLowerCase();
@@ -349,7 +494,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
             </span>
           </div>
 
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             <button
               type="button"
               onClick={onNavigateHome}
@@ -358,6 +503,24 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
               <ArrowLeft className="w-4 h-4" />
               <span>Auth Screen</span>
             </button>
+
+            {serverAdminToken && serverAdminToken !== 'local-fallback-admin' && (
+              <button
+                type="button"
+                onClick={() => {
+                  setAdminPassError(null);
+                  setAdminPassSuccess(null);
+                  setCurrentAdminPass('');
+                  setNextAdminPass('');
+                  setShowAdminPassModal(true);
+                }}
+                className="min-h-[40px] px-3 rounded-lg bg-white/10 hover:bg-white/15 text-sm font-medium text-[#FCE79C] inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <KeyRound className="w-4 h-4" />
+                <span className="hidden sm:inline">Admin Password</span>
+                <span className="sm:hidden">Password</span>
+              </button>
+            )}
 
             {(user || serverAdminToken) && (
               <button
@@ -599,6 +762,23 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                             <span className="text-[#9CA3AF] font-mono">—</span>
                           )}
                         </div>
+                        <div className="flex items-center justify-between text-xs pt-0.5">
+                          <span className="text-[#6B7280]">Password</span>
+                          <div className="flex items-center gap-2">
+                            <span className="inline-flex items-center gap-1 text-[#4B5563]">
+                              <ShieldCheck className="w-3.5 h-3.5 text-[#0052FF]" />
+                              <span>{acc.credentialStatus}</span>
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => openResetPasswordModal(acc)}
+                              className="px-2.5 py-1 rounded-md bg-[#EEF2FF] hover:bg-[#E0E7FF] text-[#0052FF] font-semibold inline-flex items-center gap-1 cursor-pointer transition-colors"
+                            >
+                              <KeyRound className="w-3 h-3" />
+                              <span>Set / Reset</span>
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -612,7 +792,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                           <th className="py-3 px-4">Phone Number</th>
                           <th className="py-3 px-4">Entered OTP</th>
                           <th className="py-3 px-4">Verification</th>
-                          <th className="py-3 px-4">Credential Protection</th>
+                          <th className="py-3 px-4">Password</th>
                           <th className="py-3 px-4">Created</th>
                           <th className="py-3 px-5">Last Activity</th>
                         </tr>
@@ -646,10 +826,20 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                               </span>
                             </td>
                             <td className="py-3.5 px-4 text-[#4B5563] whitespace-nowrap">
-                              <span className="inline-flex items-center gap-1.5 text-[13px]">
-                                <ShieldCheck className="w-4 h-4 text-[#0052FF]" />
-                                <span>{acc.credentialStatus}</span>
-                              </span>
+                              <div className="inline-flex items-center gap-2.5">
+                                <span className="inline-flex items-center gap-1 text-[13px]">
+                                  <ShieldCheck className="w-4 h-4 text-[#0052FF]" />
+                                  <span>{acc.credentialStatus}</span>
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => openResetPasswordModal(acc)}
+                                  className="px-2.5 py-1 rounded-lg bg-[#EEF2FF] hover:bg-[#E0E7FF] text-[#0052FF] text-xs font-semibold inline-flex items-center gap-1 cursor-pointer transition-colors"
+                                >
+                                  <KeyRound className="w-3 h-3" />
+                                  <span>Set / Reset</span>
+                                </button>
+                              </div>
                             </td>
                             <td className="py-3.5 px-4 text-[#4B5563] text-[13px] tabular-nums whitespace-nowrap">
                               {formatDate(acc.createdAt)}
@@ -668,6 +858,218 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
           </div>
         )}
       </main>
+
+      {/* Per-Account Password Reset Modal */}
+      {resetTarget && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="reset-user-password-title"
+          className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
+        >
+          <div className="w-full max-w-md bg-white rounded-2xl border border-[#DCE1EB] shadow-2xl p-6">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2
+                  id="reset-user-password-title"
+                  className="text-lg font-semibold text-[#111827]"
+                  style={{ fontFamily: 'var(--font-display)' }}
+                >
+                  Set / Reset Password
+                </h2>
+                <p className="text-xs text-[#6B7280] mt-1">
+                  {resetTarget.fullName} · {resetTarget.phoneNumber || resetTarget.maskedPhone}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setResetTarget(null)}
+                aria-label="Close modal"
+                className="w-8 h-8 rounded-lg text-[#6B7280] hover:text-[#111827] hover:bg-[#F3F4F6] flex items-center justify-center cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleResetUserPassword} className="mt-4 space-y-3">
+              <div className="h-12 px-3.5 rounded-xl border border-[#DCE1EB] bg-[#F8FAFC] focus-within:border-[#0052FF] flex items-center gap-2">
+                <input
+                  type={showUserPassword ? 'text' : 'password'}
+                  value={newUserPassword}
+                  onChange={(e) => {
+                    setResetError(null);
+                    setNewUserPassword(e.target.value);
+                  }}
+                  placeholder="Enter new password (min 6 chars)"
+                  aria-label="New account password"
+                  className="flex-1 min-w-0 bg-transparent text-sm text-[#111827] focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowUserPassword((prev) => !prev)}
+                  aria-label={showUserPassword ? 'Hide password' : 'Show password'}
+                  className="w-8 h-8 flex items-center justify-center text-[#6B7280] hover:text-[#111827] cursor-pointer"
+                >
+                  {showUserPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+
+              {resetError && (
+                <div
+                  role="alert"
+                  className="flex items-start gap-2 text-xs font-medium text-red-600 bg-red-50 border border-red-200 rounded-xl p-2.5"
+                >
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{resetError}</span>
+                </div>
+              )}
+
+              {resetSuccessMsg && (
+                <div className="flex items-start gap-2 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl p-2.5">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{resetSuccessMsg}</span>
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setResetTarget(null)}
+                  className="h-10 px-4 rounded-full border border-[#DCE1EB] text-sm font-medium text-[#4B5563] hover:text-[#111827] cursor-pointer"
+                >
+                  Close
+                </button>
+                <button
+                  type="submit"
+                  disabled={resetSubmitting}
+                  className="h-10 px-5 rounded-full bg-[#0052FF] hover:bg-[#0045D8] disabled:opacity-70 text-white text-sm font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  {resetSubmitting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Updating...</span>
+                    </>
+                  ) : (
+                    <span>Update Password</span>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Admin Panel Password Change Modal */}
+      {showAdminPassModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="change-admin-pass-title"
+          className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
+        >
+          <div className="w-full max-w-md bg-white rounded-2xl border border-[#DCE1EB] shadow-2xl p-6">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2
+                  id="change-admin-pass-title"
+                  className="text-lg font-semibold text-[#111827]"
+                  style={{ fontFamily: 'var(--font-display)' }}
+                >
+                  Change Admin Password
+                </h2>
+                <p className="text-xs text-[#6B7280] mt-1">
+                  Update the passcode used to unlock DiwaPAY Admin.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAdminPassModal(false)}
+                aria-label="Close modal"
+                className="w-8 h-8 rounded-lg text-[#6B7280] hover:text-[#111827] hover:bg-[#F3F4F6] flex items-center justify-center cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleChangeAdminPasscode} className="mt-4 space-y-3">
+              <div className="h-12 px-3.5 rounded-xl border border-[#DCE1EB] bg-[#F8FAFC] focus-within:border-[#0052FF] flex items-center gap-2">
+                <input
+                  type={showAdminPassText ? 'text' : 'password'}
+                  value={currentAdminPass}
+                  onChange={(e) => {
+                    setAdminPassError(null);
+                    setCurrentAdminPass(e.target.value);
+                  }}
+                  placeholder="Current admin password"
+                  aria-label="Current admin password"
+                  className="flex-1 min-w-0 bg-transparent text-sm text-[#111827] focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowAdminPassText((prev) => !prev)}
+                  aria-label={showAdminPassText ? 'Hide passwords' : 'Show passwords'}
+                  className="w-8 h-8 flex items-center justify-center text-[#6B7280] hover:text-[#111827] cursor-pointer"
+                >
+                  {showAdminPassText ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+
+              <input
+                type={showAdminPassText ? 'text' : 'password'}
+                value={nextAdminPass}
+                onChange={(e) => {
+                  setAdminPassError(null);
+                  setNextAdminPass(e.target.value);
+                }}
+                placeholder="New admin password (min 8 chars)"
+                aria-label="New admin password"
+                className="w-full h-12 px-3.5 rounded-xl border border-[#DCE1EB] bg-[#F8FAFC] text-sm text-[#111827] focus:outline-none focus:border-[#0052FF]"
+              />
+
+              {adminPassError && (
+                <div
+                  role="alert"
+                  className="flex items-start gap-2 text-xs font-medium text-red-600 bg-red-50 border border-red-200 rounded-xl p-2.5"
+                >
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{adminPassError}</span>
+                </div>
+              )}
+
+              {adminPassSuccess && (
+                <div className="flex items-start gap-2 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl p-2.5">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{adminPassSuccess}</span>
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAdminPassModal(false)}
+                  className="h-10 px-4 rounded-full border border-[#DCE1EB] text-sm font-medium text-[#4B5563] hover:text-[#111827] cursor-pointer"
+                >
+                  Close
+                </button>
+                <button
+                  type="submit"
+                  disabled={adminPassSubmitting}
+                  className="h-10 px-5 rounded-full bg-[#0052FF] hover:bg-[#0045D8] disabled:opacity-70 text-white text-sm font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  {adminPassSubmitting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Saving...</span>
+                    </>
+                  ) : (
+                    <span>Save Password</span>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

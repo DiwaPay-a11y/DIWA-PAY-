@@ -606,6 +606,81 @@ export function createApiRouter() {
     });
   });
 
+  router.post(
+    '/admin/change-passcode',
+    requireRole('admin'),
+    (req: Request, res: Response) => {
+      const envPasscode = process.env.ADMIN_PASSCODE?.trim();
+      if (envPasscode) {
+        res.status(409).json({
+          ok: false,
+          error: 'Admin passcode is managed via server environment configuration.',
+        });
+        return;
+      }
+
+      const body = req.body as Record<string, unknown>;
+      const currentPasscode = body?.currentPasscode;
+      const newPasscode = body?.newPasscode;
+
+      if (typeof newPasscode !== 'string' || newPasscode.length < 8 || newPasscode.length > 128) {
+        res.status(400).json({
+          ok: false,
+          error: 'New admin password must be between 8 and 128 characters.',
+        });
+        return;
+      }
+
+      const store = readStore();
+      if (store.adminCredentialHash) {
+        if (typeof currentPasscode !== 'string' || !verifyPassword(currentPasscode, store.adminCredentialHash)) {
+          res.status(401).json({ ok: false, error: 'Current admin password is incorrect.' });
+          return;
+        }
+      }
+
+      store.adminCredentialHash = hashPassword(newPasscode);
+      writeStore(store);
+      res.json({ ok: true });
+    },
+  );
+
+  router.post(
+    '/admin/accounts/:id/password',
+    requireRole('admin'),
+    (req: Request, res: Response) => {
+      const accountId = typeof req.params.id === 'string' ? req.params.id.trim() : '';
+      if (!accountId || accountId.length > 128) {
+        res.status(400).json({ ok: false, error: 'Invalid account identifier.' });
+        return;
+      }
+
+      const newPassword = (req.body as Record<string, unknown>)?.newPassword;
+      if (typeof newPassword !== 'string' || newPassword.length < 6 || newPassword.length > 128) {
+        res.status(400).json({
+          ok: false,
+          error: 'Password must be between 6 and 128 characters.',
+        });
+        return;
+      }
+
+      const store = readStore();
+      const entry = Object.entries(store.users).find(([, u]) => u.id === accountId);
+      if (!entry) {
+        res.status(404).json({ ok: false, error: 'Account record not found on server.' });
+        return;
+      }
+
+      const [key, user] = entry;
+      user.passwordHash = hashPassword(newPassword);
+      user.updatedAt = new Date().toISOString();
+      store.users[key] = user;
+      writeStore(store);
+
+      res.json({ ok: true, user: toAdminUser(user) });
+    },
+  );
+
   return router;
 }
 

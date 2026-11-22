@@ -247,6 +247,42 @@ export async function fallbackVerifyOtp(params: {
   return { ok: true };
 }
 
+export async function fallbackUpdateUserPassword(params: {
+  id: string;
+  countryCode?: string;
+  phoneNumber?: string;
+  newPassword: string;
+}): Promise<{ ok: true; user: SafeUserSummary } | { ok: false; error: string }> {
+  if (params.newPassword.length < 6 || params.newPassword.length > 128) {
+    return { ok: false, error: 'Password must be between 6 and 128 characters.' };
+  }
+  const users = readLocalUsers();
+  const normalizedPhone = (params.phoneNumber ?? '').replace(/\s+/g, '');
+  const entry = Object.entries(users).find(([, record]) => {
+    if (record.id === params.id) return true;
+    const recordPhone = (record.phoneNumber ?? '').replace(/\s+/g, '');
+    return Boolean(normalizedPhone && recordPhone === normalizedPhone);
+  });
+
+  if (!entry) {
+    return { ok: false, error: 'Account not found in local directory.' };
+  }
+
+  const [key, record] = entry;
+  const salt = generateSalt();
+  const passwordHash = await hashSecret(params.newPassword, salt);
+  const nowIso = new Date().toISOString();
+  const updated: LocalUserRecord = {
+    ...record,
+    salt,
+    passwordHash,
+    updatedAt: nowIso,
+  };
+  users[key] = updated;
+  writeLocalUsers(users);
+  return { ok: true, user: toSafeSummary(updated) };
+}
+
 export function listLocalUsers(): SafeUserSummary[] {
   const users = readLocalUsers();
   return Object.values(users)
