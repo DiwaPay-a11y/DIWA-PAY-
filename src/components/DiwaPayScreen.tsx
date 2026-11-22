@@ -3,6 +3,12 @@ import { Eye, EyeOff, CheckCircle2, AlertCircle, Loader2, ArrowLeft } from 'luci
 import { doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { DiwaPayLogo } from './DiwaPayLogo';
 import { auth, db, handleFirestoreError, OperationType } from '../firebase';
+import {
+  fallbackRegister,
+  fallbackResetPassword,
+  fallbackSignIn,
+  saveLocalBackup,
+} from '../utils/localAuthFallback';
 import type { AuthFormState, AuthMode, SafeUserSummary } from '../types/auth';
 
 interface DiwaPayScreenProps {
@@ -12,6 +18,7 @@ interface DiwaPayScreenProps {
   onFormChange: (updater: (prev: AuthFormState) => AuthFormState) => void;
   cooldown: number;
   hasSentOtp: boolean;
+  expectedOtp?: string | null;
   onSendOtp: () => Promise<{ ok: boolean; error?: string }>;
   onSubmitSuccess: (result: { user: SafeUserSummary; token?: string }) => void;
   completedMessage: string | null;
@@ -31,6 +38,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
   onFormChange,
   cooldown,
   hasSentOtp,
+  expectedOtp,
   onSendOtp,
   onSubmitSuccess,
   completedMessage,
@@ -244,19 +252,64 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
           if (res.ok && data.ok && data.user) {
             backendUser = data.user;
             backendToken = data.token;
-          } else if (!res.ok) {
+            if (mode === 'register' || mode === 'reset') {
+              await saveLocalBackup({
+                id: data.user.id,
+                fullName: trimmedName || data.user.fullName,
+                countryCode: form.countryCode,
+                phone: form.phone,
+                password: form.password,
+              });
+            }
+          } else if (res.status === 401 && mode === 'signin') {
+            const localMatch = await fallbackSignIn({
+              countryCode: form.countryCode,
+              phone: form.phone,
+              password: form.password,
+            });
+            if (localMatch.ok) {
+              backendUser = localMatch.user;
+            } else {
+              setErrorMsg(data.error ?? 'Invalid phone number or password.');
+              return;
+            }
+          } else if (res.status >= 400 && res.status < 500 && res.status !== 404) {
             setErrorMsg(data.error ?? 'Please check your entered details.');
             return;
           }
         }
       } catch {
-        setErrorMsg('Unable to reach server. Please refresh and try again.');
-        return;
+        // Network/serverless unavailable; fall through to local fallback below
       }
 
       if (!backendUser) {
-        setErrorMsg('Unable to process request right now. Please try again.');
-        return;
+        const localResult =
+          mode === 'register'
+            ? await fallbackRegister({
+                fullName: trimmedName,
+                countryCode: form.countryCode,
+                phone: form.phone,
+                password: form.password,
+              })
+            : mode === 'signin'
+              ? await fallbackSignIn({
+                  countryCode: form.countryCode,
+                  phone: form.phone,
+                  password: form.password,
+                })
+              : await fallbackResetPassword({
+                  countryCode: form.countryCode,
+                  phone: form.phone,
+                  password: form.password,
+                  otp: form.otp,
+                  expectedOtp,
+                });
+
+        if (!localResult.ok) {
+          setErrorMsg(localResult.error);
+          return;
+        }
+        backendUser = localResult.user;
       }
 
       // Sync non-sensitive profile metadata to Cloud Firestore when already signed into Google

@@ -193,6 +193,11 @@ export default function App() {
           onFormChange={setForm}
           cooldown={cooldown}
           hasSentOtp={hasSentOtp}
+          expectedOtp={
+            latestSms && latestSms.phone === `${form.countryCode} ${form.phone}`
+              ? latestSms.code
+              : null
+          }
           onSendOtp={handleSendOtp}
           onSubmitSuccess={handleSubmitSuccess}
           completedMessage={completedMessage}

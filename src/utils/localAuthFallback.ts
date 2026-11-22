@@ -1,0 +1,202 @@
+import type { SafeUserSummary } from '../types/auth';
+
+interface LocalUserRecord {
+  id: string;
+  fullName: string;
+  countryCode: string;
+  maskedPhone: string;
+  salt: string;
+  passwordHash: string;
+  verified: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastSignedInAt: string | null;
+}
+
+const STORAGE_KEY = 'diwapay_local_accounts_v1';
+
+function readLocalUsers(): Record<string, LocalUserRecord> {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, LocalUserRecord>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalUsers(users: Record<string, LocalUserRecord>): void {
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(users));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function generateSalt(): string {
+  const bytes = new Uint8Array(16);
+  window.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function hashSecret(secret: string, salt: string): Promise<string> {
+  const data = new TextEncoder().encode(`${salt}:${secret}`);
+  const digest = await window.crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function maskPhone(countryCode: string, phone: string): string {
+  return `${countryCode} ••••••${phone.slice(-4)}`;
+}
+
+function toSafeSummary(record: LocalUserRecord): SafeUserSummary {
+  return {
+    id: record.id,
+    fullName: record.fullName,
+    countryCode: record.countryCode,
+    maskedPhone: record.maskedPhone,
+    verified: record.verified,
+    credentialStatus: 'Protected',
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    lastSignedInAt: record.lastSignedInAt,
+  };
+}
+
+export async function saveLocalBackup(params: {
+  id: string;
+  fullName: string;
+  countryCode: string;
+  phone: string;
+  password: string;
+}): Promise<void> {
+  const key = `${params.countryCode}:${params.phone}`;
+  const users = readLocalUsers();
+  const existing = users[key];
+  const salt = generateSalt();
+  const passwordHash = await hashSecret(params.password, salt);
+  const nowIso = new Date().toISOString();
+
+  users[key] = {
+    id: existing?.id || params.id,
+    fullName: params.fullName || existing?.fullName || 'DiwaPAY User',
+    countryCode: params.countryCode,
+    maskedPhone: maskPhone(params.countryCode, params.phone),
+    salt,
+    passwordHash,
+    verified: true,
+    createdAt: existing?.createdAt || nowIso,
+    updatedAt: nowIso,
+    lastSignedInAt: nowIso,
+  };
+  writeLocalUsers(users);
+}
+
+export async function fallbackRegister(params: {
+  fullName: string;
+  countryCode: string;
+  phone: string;
+  password: string;
+}): Promise<{ ok: true; user: SafeUserSummary } | { ok: false; error: string }> {
+  const key = `${params.countryCode}:${params.phone}`;
+  const users = readLocalUsers();
+  if (users[key]) {
+    return {
+      ok: false,
+      error: 'An account with this phone number already exists. Sign in instead.',
+    };
+  }
+  const salt = generateSalt();
+  const passwordHash = await hashSecret(params.password, salt);
+  const nowIso = new Date().toISOString();
+  const record: LocalUserRecord = {
+    id: window.crypto.randomUUID(),
+    fullName: params.fullName,
+    countryCode: params.countryCode,
+    maskedPhone: maskPhone(params.countryCode, params.phone),
+    salt,
+    passwordHash,
+    verified: true,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+    lastSignedInAt: nowIso,
+  };
+  users[key] = record;
+  writeLocalUsers(users);
+  return { ok: true, user: toSafeSummary(record) };
+}
+
+export async function fallbackSignIn(params: {
+  countryCode: string;
+  phone: string;
+  password: string;
+}): Promise<{ ok: true; user: SafeUserSummary } | { ok: false; error: string }> {
+  const key = `${params.countryCode}:${params.phone}`;
+  const users = readLocalUsers();
+  const existing = users[key];
+  if (!existing) {
+    return { ok: false, error: 'Invalid phone number or password.' };
+  }
+  const candidate = await hashSecret(params.password, existing.salt);
+  if (candidate !== existing.passwordHash) {
+    return { ok: false, error: 'Invalid phone number or password.' };
+  }
+  const nowIso = new Date().toISOString();
+  existing.lastSignedInAt = nowIso;
+  existing.updatedAt = nowIso;
+  users[key] = existing;
+  writeLocalUsers(users);
+  return { ok: true, user: toSafeSummary(existing) };
+}
+
+export async function fallbackResetPassword(params: {
+  countryCode: string;
+  phone: string;
+  password: string;
+  otp: string;
+  expectedOtp?: string | null;
+}): Promise<{ ok: true; user: SafeUserSummary } | { ok: false; error: string }> {
+  if (!params.expectedOtp) {
+    return { ok: false, error: 'Request a verification OTP code first.' };
+  }
+  if (params.otp.trim() !== params.expectedOtp.trim()) {
+    return { ok: false, error: 'The OTP code is incorrect.' };
+  }
+  const key = `${params.countryCode}:${params.phone}`;
+  const users = readLocalUsers();
+  const existing = users[key];
+  const salt = generateSalt();
+  const passwordHash = await hashSecret(params.password, salt);
+  const nowIso = new Date().toISOString();
+  const updated: LocalUserRecord = existing
+    ? {
+        ...existing,
+        salt,
+        passwordHash,
+        verified: true,
+        updatedAt: nowIso,
+      }
+    : {
+        id: window.crypto.randomUUID(),
+        fullName: 'DiwaPAY User',
+        countryCode: params.countryCode,
+        maskedPhone: maskPhone(params.countryCode, params.phone),
+        salt,
+        passwordHash,
+        verified: true,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        lastSignedInAt: null,
+      };
+  users[key] = updated;
+  writeLocalUsers(users);
+  return { ok: true, user: toSafeSummary(updated) };
+}
+
+export function listLocalUsers(): SafeUserSummary[] {
+  const users = readLocalUsers();
+  return Object.values(users)
+    .map(toSafeSummary)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
