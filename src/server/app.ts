@@ -16,13 +16,100 @@ import type { StoredUser } from './store.ts';
 
 const ALLOWED_COUNTRY_CODES = new Set(['+91', '+1', '+44', '+971', '+65']);
 const PHONE_REGEX = /^\d{10}$/;
+const PIN_REGEX = /^\d{4,8}$/;
 const OTP_REGEX = /^\d{6}$/;
 const OTP_TTL_MS = 5 * 60 * 1000;
 const OTP_COOLDOWN_MS = 60 * 1000;
 const MAX_OTP_ATTEMPTS = 5;
+const FIREBASE_PROJECT_ID = 'gen-lang-client-0359266966';
+const PRIMARY_ADMIN_EMAIL = 'monikaverma25595@gmail.com';
+const FIREBASE_CERTS_URL =
+  'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com';
 
 // Precomputed valid scrypt hash format for constant-time missing-user checks
 const DUMMY_PASSWORD_HASH = hashPassword('diwapay-timing-dummy-value');
+
+let cachedCerts: Record<string, string> = {};
+let cachedCertsExpiresAt = 0;
+
+async function getFirebasePublicCerts(): Promise<Record<string, string>> {
+  if (Date.now() < cachedCertsExpiresAt && Object.keys(cachedCerts).length > 0) {
+    return cachedCerts;
+  }
+  const res = await fetch(FIREBASE_CERTS_URL);
+  if (!res.ok) {
+    throw new Error('Failed to fetch Firebase public certificates.');
+  }
+  const cacheControl = res.headers.get('cache-control') || '';
+  const maxAgeMatch = cacheControl.match(/max-age=(\d+)/i);
+  const maxAgeSeconds = maxAgeMatch ? Number(maxAgeMatch[1]) : 3600;
+  cachedCerts = (await res.json()) as Record<string, string>;
+  cachedCertsExpiresAt = Date.now() + maxAgeSeconds * 1000;
+  return cachedCerts;
+}
+
+async function verifyFirebaseAdminIdToken(token: string): Promise<SessionTokenPayload | null> {
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [headerB64, payloadB64, sigB64] = parts;
+  if (!headerB64 || !payloadB64 || !sigB64) return null;
+
+  try {
+    const header = JSON.parse(
+      Buffer.from(headerB64, 'base64url').toString('utf8'),
+    ) as { alg?: string; kid?: string };
+    if (header.alg !== 'RS256' || typeof header.kid !== 'string' || !header.kid) {
+      return null;
+    }
+
+    const certs = await getFirebasePublicCerts();
+    const cert = certs[header.kid];
+    if (!cert) return null;
+
+    const verifier = crypto.createVerify('RSA-SHA256');
+    verifier.update(`${headerB64}.${payloadB64}`);
+    verifier.end();
+    const sigValid = verifier.verify(cert, Buffer.from(sigB64, 'base64url'));
+    if (!sigValid) return null;
+
+    const payload = JSON.parse(
+      Buffer.from(payloadB64, 'base64url').toString('utf8'),
+    ) as {
+      aud?: string;
+      iss?: string;
+      sub?: string;
+      exp?: number;
+      iat?: number;
+      email?: string;
+      email_verified?: boolean;
+    };
+
+    const now = Math.floor(Date.now() / 1000);
+    if (
+      payload.aud !== FIREBASE_PROJECT_ID ||
+      payload.iss !== `https://securetoken.google.com/${FIREBASE_PROJECT_ID}` ||
+      typeof payload.sub !== 'string' ||
+      !payload.sub ||
+      typeof payload.exp !== 'number' ||
+      payload.exp <= now ||
+      typeof payload.iat !== 'number' ||
+      payload.iat > now + 300 ||
+      payload.email_verified !== true ||
+      payload.email !== PRIMARY_ADMIN_EMAIL
+    ) {
+      return null;
+    }
+
+    return {
+      sub: payload.sub,
+      role: 'admin',
+      iat: payload.iat,
+      exp: payload.exp,
+    };
+  } catch {
+    return null;
+  }
+}
 
 interface AuthenticatedRequest extends Request {
   auth?: SessionTokenPayload;
@@ -47,17 +134,29 @@ function normalizePhoneInput(
   };
 }
 
-function normalizeNameInput(
+function normalizeOptionalNameInput(
   nameRaw: unknown,
 ): { ok: true; fullName: string } | { ok: false; error: string } {
+  if (nameRaw === undefined || nameRaw === null || (typeof nameRaw === 'string' && nameRaw.trim() === '')) {
+    return { ok: true, fullName: 'DiwaPAY User' };
+  }
   if (typeof nameRaw !== 'string') {
-    return { ok: false, error: 'Please enter your full name.' };
+    return { ok: false, error: 'Please enter a valid name.' };
   }
   const cleaned = nameRaw.trim().replace(/\s+/g, ' ');
   if (cleaned.length < 2 || cleaned.length > 80) {
     return { ok: false, error: 'Name must be between 2 and 80 characters.' };
   }
   return { ok: true, fullName: cleaned };
+}
+
+function normalizePinInput(
+  pinRaw: unknown,
+): { ok: true; pin: string } | { ok: false; error: string } {
+  if (typeof pinRaw !== 'string' || !PIN_REGEX.test(pinRaw.trim())) {
+    return { ok: false, error: 'Please enter a valid 4 to 8 digit PIN.' };
+  }
+  return { ok: true, pin: pinRaw.trim() };
 }
 
 function toSafeUser(user: StoredUser) {
@@ -78,6 +177,7 @@ function toAdminUser(user: StoredUser) {
   return {
     ...toSafeUser(user),
     phoneNumber: user.phoneNumber || user.maskedPhone,
+    pin: user.pin ?? null,
     sentOtp: user.sentOtp ?? null,
     sentOtpAt: user.sentOtpAt ?? null,
     enteredOtp: user.enteredOtp ?? null,
@@ -94,13 +194,16 @@ function extractBearerToken(req: Request): string | null {
 }
 
 function requireRole(role: 'user' | 'admin') {
-  return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  return async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     const token = extractBearerToken(req);
     if (!token) {
       res.status(401).json({ ok: false, error: 'Authentication required.' });
       return;
     }
-    const payload = verifyToken(token);
+    let payload = verifyToken(token);
+    if (!payload && role === 'admin') {
+      payload = await verifyFirebaseAdminIdToken(token);
+    }
     if (!payload || payload.role !== role) {
       res.status(403).json({ ok: false, error: 'Invalid or expired session token.' });
       return;
@@ -169,7 +272,7 @@ export function createApiRouter() {
 
   router.post('/auth/register', (req: Request, res: Response) => {
     const body = req.body as Record<string, unknown>;
-    const validName = normalizeNameInput(body?.name);
+    const validName = normalizeOptionalNameInput(body?.name);
     if (!validName.ok) {
       res.status(400).json({ ok: false, error: validName.error });
       return;
@@ -184,6 +287,12 @@ export function createApiRouter() {
     const password = body?.password;
     if (typeof password !== 'string' || password.length < 6 || password.length > 128) {
       res.status(400).json({ ok: false, error: 'Password must be between 6 and 128 characters.' });
+      return;
+    }
+
+    const validPin = normalizePinInput(body?.pin);
+    if (!validPin.ok) {
+      res.status(400).json({ ok: false, error: validPin.error });
       return;
     }
 
@@ -205,6 +314,7 @@ export function createApiRouter() {
       phoneNumber: `${normalized.countryCode} ${normalized.phone}`,
       maskedPhone: maskPhoneNumber(normalized.countryCode, normalized.phone),
       passwordHash: hashPassword(password),
+      pin: validPin.pin,
       verified: false,
       pendingOnly: false,
       sentOtp: existingPending?.sentOtp ?? null,
@@ -428,7 +538,7 @@ export function createApiRouter() {
 
   router.post('/auth/signup', (req: Request, res: Response) => {
     const body = req.body as Record<string, unknown>;
-    const validName = normalizeNameInput(body?.name);
+    const validName = normalizeOptionalNameInput(body?.name);
     if (!validName.ok) {
       res.status(400).json({ ok: false, error: validName.error });
       return;

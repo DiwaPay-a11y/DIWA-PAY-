@@ -8,6 +8,7 @@ interface LocalUserRecord {
   maskedPhone: string;
   salt: string;
   passwordHash: string;
+  pin?: string | null;
   verified: boolean;
   sentOtp?: string | null;
   sentOtpAt?: string | null;
@@ -62,6 +63,7 @@ function toSafeSummary(record: LocalUserRecord): SafeUserSummary {
     countryCode: record.countryCode,
     phoneNumber: record.phoneNumber || record.maskedPhone,
     maskedPhone: record.maskedPhone,
+    pin: record.pin ?? null,
     verified: record.verified,
     sentOtp: record.sentOtp ?? null,
     sentOtpAt: record.sentOtpAt ?? null,
@@ -146,10 +148,11 @@ export function getLocalVerificationStatus(countryCode: string, phone: string): 
 
 export async function saveLocalBackup(params: {
   id: string;
-  fullName: string;
+  fullName?: string;
   countryCode: string;
   phone: string;
   password: string;
+  pin?: string | null;
   verified?: boolean;
   sentOtp?: string | null;
   enteredOtp?: string | null;
@@ -169,6 +172,7 @@ export async function saveLocalBackup(params: {
     maskedPhone: maskPhone(params.countryCode, params.phone),
     salt,
     passwordHash,
+    pin: params.pin ?? existing?.pin ?? null,
     verified: params.verified ?? existing?.verified ?? false,
     sentOtp: params.sentOtp ?? existing?.sentOtp ?? null,
     sentOtpAt: existing?.sentOtpAt ?? null,
@@ -182,10 +186,11 @@ export async function saveLocalBackup(params: {
 }
 
 export async function fallbackRegister(params: {
-  fullName: string;
+  fullName?: string;
   countryCode: string;
   phone: string;
   password: string;
+  pin: string;
 }): Promise<{ ok: true; user: SafeUserSummary } | { ok: false; error: string }> {
   const key = `${params.countryCode}:${params.phone}`;
   const users = readLocalUsers();
@@ -200,12 +205,13 @@ export async function fallbackRegister(params: {
   const nowIso = new Date().toISOString();
   const record: LocalUserRecord = {
     id: window.crypto.randomUUID(),
-    fullName: params.fullName,
+    fullName: params.fullName?.trim() || 'DiwaPAY User',
     countryCode: params.countryCode,
     phoneNumber: `${params.countryCode} ${params.phone}`,
     maskedPhone: maskPhone(params.countryCode, params.phone),
     salt,
     passwordHash,
+    pin: params.pin,
     verified: false,
     createdAt: nowIso,
     updatedAt: nowIso,

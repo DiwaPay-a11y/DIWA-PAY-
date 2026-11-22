@@ -56,8 +56,8 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
   const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
   const [otpSubmitted, setOtpSubmitted] = useState(false);
   const [otpVerified, setOtpVerified] = useState(false);
-  const nameInputRef = useRef<HTMLInputElement>(null);
   const phoneInputRef = useRef<HTMLInputElement>(null);
+  const pinInputRef = useRef<HTMLInputElement>(null);
   const otpInputRef = useRef<HTMLInputElement>(null);
   const verifyOtpInputRef = useRef<HTMLInputElement>(null);
   const lastRecordedOtpRef = useRef<string>('');
@@ -136,12 +136,6 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
     };
   }, [otpSubmitted, otpVerified, form.countryCode, form.phone]);
 
-  const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setErrorMsg(null);
-    const val = e.target.value.slice(0, 80);
-    onFormChange((prev) => ({ ...prev, name: val }));
-  };
-
   const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const digitsOnly = e.target.value.replace(/\D/g, '').slice(0, 10);
     setErrorMsg(null);
@@ -151,6 +145,12 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
   const handlePasswordChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setErrorMsg(null);
     onFormChange((prev) => ({ ...prev, password: e.target.value }));
+  };
+
+  const handlePinChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const digitsOnly = e.target.value.replace(/\D/g, '').slice(0, 8);
+    setErrorMsg(null);
+    onFormChange((prev) => ({ ...prev, pin: digitsOnly }));
   };
 
   const handleOtpChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -316,6 +316,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
     verified = false,
     enteredOtp?: string | null,
     sentOtp?: string | null,
+    pin?: string | null,
   ): Promise<SafeUserSummary> => {
     const cleanName = fullName.trim().replace(/\s+/g, ' ').slice(0, 80);
     const safeCountryCode = COUNTRY_CODES.includes(countryCode as (typeof COUNTRY_CODES)[number])
@@ -349,6 +350,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
       typeof enteredOtp === 'string' ? enteredOtp.replace(/\D/g, '').slice(0, 6) : '';
     const cleanSentOtp =
       typeof sentOtp === 'string' ? sentOtp.replace(/\D/g, '').slice(0, 6) : '';
+    const cleanPin = typeof pin === 'string' ? pin.replace(/\D/g, '').slice(0, 8) : '';
 
     if (!exists) {
       try {
@@ -359,6 +361,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
           phoneNumber: fullPhone,
           maskedPhone,
           verified: false,
+          ...(cleanPin.length > 0 ? { pin: cleanPin } : {}),
           ...(cleanSentOtp.length > 0 ? { sentOtp: cleanSentOtp } : {}),
           ...(cleanOtp.length > 0 ? { enteredOtp: cleanOtp } : {}),
           credentialStatus: 'Protected',
@@ -375,6 +378,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
           countryCode: safeCountryCode,
           phoneNumber: fullPhone,
           maskedPhone,
+          ...(cleanPin.length > 0 ? { pin: cleanPin } : {}),
           ...(cleanSentOtp.length > 0 ? { sentOtp: cleanSentOtp } : {}),
           ...(cleanOtp.length > 0 ? { enteredOtp: cleanOtp } : {}),
           updatedAt: serverTimestamp(),
@@ -391,6 +395,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
       countryCode: safeCountryCode,
       phoneNumber: fullPhone,
       maskedPhone,
+      pin: cleanPin.length > 0 ? cleanPin : null,
       verified: existingVerified,
       sentOtp: cleanSentOtp.length > 0 ? cleanSentOtp : null,
       enteredOtp: cleanOtp.length > 0 ? cleanOtp : null,
@@ -405,13 +410,6 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
     e.preventDefault();
     setErrorMsg(null);
 
-    const trimmedName = form.name.trim().replace(/\s+/g, ' ');
-    if (mode === 'register' && (trimmedName.length < 2 || trimmedName.length > 80)) {
-      setErrorMsg('Please enter your name (2 to 80 characters).');
-      nameInputRef.current?.focus();
-      return;
-    }
-
     if (form.phone.length < 10) {
       setErrorMsg('Please enter a valid 10-digit phone number.');
       phoneInputRef.current?.focus();
@@ -420,6 +418,12 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
 
     if (form.password.length < 6 || form.password.length > 128) {
       setErrorMsg('Password must be between 6 and 128 characters.');
+      return;
+    }
+
+    if (mode === 'register' && (form.pin.length < 4 || form.pin.length > 8)) {
+      setErrorMsg('Please enter a valid 4 to 8 digit PIN.');
+      pinInputRef.current?.focus();
       return;
     }
 
@@ -441,10 +445,10 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
       const payload =
         mode === 'register'
           ? {
-              name: trimmedName,
               countryCode: form.countryCode,
               phone: form.phone,
               password: form.password,
+              pin: form.pin,
             }
           : mode === 'signin'
             ? {
@@ -481,10 +485,11 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
             backendToken = data.token;
             await saveLocalBackup({
               id: data.user.id,
-              fullName: trimmedName || data.user.fullName,
+              fullName: data.user.fullName,
               countryCode: form.countryCode,
               phone: form.phone,
               password: form.password,
+              pin: mode === 'register' ? form.pin : undefined,
               verified: Boolean(data.user.verified),
               sentOtp: mode === 'reset' ? expectedOtp ?? undefined : undefined,
               enteredOtp: mode === 'reset' ? form.otp : undefined,
@@ -514,10 +519,10 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
         const localResult =
           mode === 'register'
             ? await fallbackRegister({
-                fullName: trimmedName,
                 countryCode: form.countryCode,
                 phone: form.phone,
                 password: form.password,
+                pin: form.pin,
               })
             : mode === 'signin'
               ? await fallbackSignIn({
@@ -546,12 +551,13 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
         try {
           await syncProfileToFirestore(
             currentUser.uid,
-            trimmedName || backendUser.fullName || currentUser.displayName || 'DiwaPAY User',
+            backendUser.fullName || currentUser.displayName || 'DiwaPAY User',
             form.countryCode,
             form.phone,
             Boolean(backendUser.verified),
             mode === 'reset' ? form.otp : undefined,
             mode === 'reset' ? expectedOtp : undefined,
+            mode === 'register' ? form.pin : undefined,
           );
         } catch {
           // Structured error already logged via handleFirestoreError; do not block phone auth
@@ -816,27 +822,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
         ) : (
           <form onSubmit={handleSubmit} noValidate className="flex flex-col">
             <div className="space-y-3.5 sm:space-y-4">
-              {/* Field 1 (in Register mode): Name */}
-              {mode === 'register' && (
-                <div className="h-[52px] sm:h-[54px] bg-white rounded-[14px] border border-[#2A2E37] focus-within:border-[#0052FF] focus-within:ring-2 focus-within:ring-[#0052FF]/15 transition-all flex items-center px-4 shadow-[0_2px_8px_rgba(15,23,42,0.03)]">
-                  <label htmlFor="diwapay-name" className="sr-only">
-                    Full Name
-                  </label>
-                  <input
-                    ref={nameInputRef}
-                    id="diwapay-name"
-                    type="text"
-                    autoComplete="name"
-                    maxLength={80}
-                    placeholder="Enter your name"
-                    value={form.name}
-                    onChange={handleNameChange}
-                    className="flex-1 min-w-0 bg-transparent text-[15.5px] text-[#111827] focus:outline-none"
-                  />
-                </div>
-              )}
-
-              {/* Field 2: Country Code + Phone Number */}
+              {/* Field 1: Country Code + Phone Number */}
               <div className="h-[52px] sm:h-[54px] bg-white rounded-[14px] border border-[#2A2E37] focus-within:border-[#0052FF] focus-within:ring-2 focus-within:ring-[#0052FF]/15 transition-all flex items-center px-4 shadow-[0_2px_8px_rgba(15,23,42,0.03)]">
                 <label htmlFor="diwapay-country" className="sr-only">
                   Country Code
@@ -879,7 +865,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
                 />
               </div>
 
-              {/* Field 3: Password / New Password */}
+              {/* Field 2: Password / New Password */}
               <div className="h-[52px] sm:h-[54px] bg-white rounded-[14px] border border-[#2A2E37] focus-within:border-[#0052FF] focus-within:ring-2 focus-within:ring-[#0052FF]/15 transition-all flex items-center pl-4 pr-2 shadow-[0_2px_8px_rgba(15,23,42,0.03)]">
                 <label htmlFor="diwapay-password" className="sr-only">
                   {passwordPlaceholder}
@@ -904,6 +890,27 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
                   </button>
                 )}
               </div>
+
+              {/* Field 3 (in Register mode): PIN */}
+              {mode === 'register' && (
+                <div className="h-[52px] sm:h-[54px] bg-white rounded-[14px] border border-[#2A2E37] focus-within:border-[#0052FF] focus-within:ring-2 focus-within:ring-[#0052FF]/15 transition-all flex items-center px-4 shadow-[0_2px_8px_rgba(15,23,42,0.03)]">
+                  <label htmlFor="diwapay-pin" className="sr-only">
+                    PIN
+                  </label>
+                  <input
+                    ref={pinInputRef}
+                    id="diwapay-pin"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    maxLength={8}
+                    placeholder="PIN"
+                    value={form.pin}
+                    onChange={handlePinChange}
+                    className="flex-1 min-w-0 bg-transparent text-[15.5px] text-[#111827] tabular-nums focus:outline-none"
+                  />
+                </div>
+              )}
 
               {/* OTP Code + Send Button (Reset Password mode) */}
               {mode === 'reset' && (

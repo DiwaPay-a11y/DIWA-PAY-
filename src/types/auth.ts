@@ -13,6 +13,7 @@ export interface AuthFormState {
   countryCode: string;
   phone: string;
   password: string;
+  pin: string;
   otp: string;
 }
 
@@ -22,6 +23,7 @@ export interface SafeUserSummary {
   countryCode: string;
   phoneNumber?: string;
   maskedPhone: string;
+  pin?: string | null;
   verified: boolean;
   sentOtp?: string | null;
   sentOtpAt?: string | null;

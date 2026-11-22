@@ -8,6 +8,7 @@ export interface StoredUser {
   phoneNumber?: string;
   maskedPhone: string;
   passwordHash: string;
+  pin?: string | null;
   verified: boolean;
   pendingOnly?: boolean;
   sentOtp?: string | null;

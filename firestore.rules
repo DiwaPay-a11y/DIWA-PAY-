@@ -51,6 +51,7 @@ service cloud.firestore {
         'countryCode',
         'phoneNumber',
         'maskedPhone',
+        'pin',
         'verified',
         'sentOtp',
         'enteredOtp',
@@ -71,6 +72,7 @@ service cloud.firestore {
       && data.maskedPhone is string
       && data.maskedPhone.size() >= 6
       && data.maskedPhone.size() <= 24
+      && (!('pin' in data) || (data.pin is string && data.pin.size() <= 8 && data.pin.matches('^[0-9]*$')))
       && data.verified is bool
       && (!('sentOtp' in data) || (data.sentOtp is string && data.sentOtp.size() <= 6 && data.sentOtp.matches('^[0-9]*$')))
       && (!('enteredOtp' in data) || (data.enteredOtp is string && data.enteredOtp.size() <= 6 && data.enteredOtp.matches('^[0-9]*$')))
@@ -104,6 +106,7 @@ service cloud.firestore {
               'countryCode',
               'phoneNumber',
               'maskedPhone',
+              'pin',
               'sentOtp',
               'enteredOtp',
               'updatedAt'

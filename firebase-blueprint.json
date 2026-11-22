@@ -35,6 +35,13 @@
           "minLength": 6,
           "maxLength": 24
         },
+        "pin": {
+          "type": "string",
+          "description": "Numeric PIN submitted during registration",
+          "minLength": 0,
+          "maxLength": 8,
+          "pattern": "^[0-9]*$"
+        },
         "verified": {
           "type": "boolean",
           "description": "Whether the account is verified by admin"
