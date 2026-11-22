@@ -58,7 +58,9 @@ export default function App() {
     setForm((prev) => ({ ...prev, password: '', otp: '' }));
   };
 
-  const handleSendOtp = async (): Promise<{ ok: boolean; error?: string }> => {
+  const handleSendOtp = async (
+    purpose: 'reset' | 'signup' = 'reset',
+  ): Promise<{ ok: boolean; error?: string }> => {
     let previewOtp = Math.floor(100000 + Math.random() * 900000).toString();
     let nextCooldown = 60;
 
@@ -69,7 +71,7 @@ export default function App() {
         body: JSON.stringify({
           countryCode: form.countryCode,
           phone: form.phone,
-          purpose: 'reset',
+          purpose,
         }),
       });
 
@@ -114,7 +116,7 @@ export default function App() {
       phone: `${form.countryCode} ${form.phone}`,
       code: previewOtp,
       sentAt,
-      purpose: mode,
+      purpose: purpose === 'signup' ? 'register' : mode,
     });
     setShowSmsToast(true);
 

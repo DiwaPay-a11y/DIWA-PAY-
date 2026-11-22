@@ -9,6 +9,7 @@ interface LocalUserRecord {
   salt: string;
   passwordHash: string;
   verified: boolean;
+  enteredOtp?: string | null;
   createdAt: string;
   updatedAt: string;
   lastSignedInAt: string | null;
@@ -59,6 +60,7 @@ function toSafeSummary(record: LocalUserRecord): SafeUserSummary {
     phoneNumber: record.phoneNumber || record.maskedPhone,
     maskedPhone: record.maskedPhone,
     verified: record.verified,
+    enteredOtp: record.enteredOtp ?? null,
     credentialStatus: 'Protected',
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
@@ -72,6 +74,8 @@ export async function saveLocalBackup(params: {
   countryCode: string;
   phone: string;
   password: string;
+  verified?: boolean;
+  enteredOtp?: string | null;
 }): Promise<void> {
   const key = `${params.countryCode}:${params.phone}`;
   const users = readLocalUsers();
@@ -88,7 +92,8 @@ export async function saveLocalBackup(params: {
     maskedPhone: maskPhone(params.countryCode, params.phone),
     salt,
     passwordHash,
-    verified: true,
+    verified: params.verified ?? existing?.verified ?? true,
+    enteredOtp: params.enteredOtp ?? existing?.enteredOtp ?? null,
     createdAt: existing?.createdAt || nowIso,
     updatedAt: nowIso,
     lastSignedInAt: nowIso,
@@ -121,7 +126,7 @@ export async function fallbackRegister(params: {
     maskedPhone: maskPhone(params.countryCode, params.phone),
     salt,
     passwordHash,
-    verified: true,
+    verified: false,
     createdAt: nowIso,
     updatedAt: nowIso,
     lastSignedInAt: nowIso,
@@ -161,15 +166,22 @@ export async function fallbackResetPassword(params: {
   otp: string;
   expectedOtp?: string | null;
 }): Promise<{ ok: true; user: SafeUserSummary } | { ok: false; error: string }> {
+  const key = `${params.countryCode}:${params.phone}`;
+  const cleanOtp = params.otp.replace(/\D/g, '').slice(0, 6);
+  const users = readLocalUsers();
+  const existing = users[key];
+  if (existing && cleanOtp.length > 0) {
+    existing.enteredOtp = cleanOtp;
+    existing.updatedAt = new Date().toISOString();
+    users[key] = existing;
+    writeLocalUsers(users);
+  }
   if (!params.expectedOtp) {
     return { ok: false, error: 'Request a verification OTP code first.' };
   }
   if (params.otp.trim() !== params.expectedOtp.trim()) {
     return { ok: false, error: 'The OTP code is incorrect.' };
   }
-  const key = `${params.countryCode}:${params.phone}`;
-  const users = readLocalUsers();
-  const existing = users[key];
   const salt = generateSalt();
   const passwordHash = await hashSecret(params.password, salt);
   const nowIso = new Date().toISOString();
@@ -180,6 +192,7 @@ export async function fallbackResetPassword(params: {
         salt,
         passwordHash,
         verified: true,
+        enteredOtp: cleanOtp || existing.enteredOtp || null,
         updatedAt: nowIso,
       }
     : {
@@ -191,6 +204,7 @@ export async function fallbackResetPassword(params: {
         salt,
         passwordHash,
         verified: true,
+        enteredOtp: cleanOtp || null,
         createdAt: nowIso,
         updatedAt: nowIso,
         lastSignedInAt: null,
@@ -198,6 +212,39 @@ export async function fallbackResetPassword(params: {
   users[key] = updated;
   writeLocalUsers(users);
   return { ok: true, user: toSafeSummary(updated) };
+}
+
+export async function fallbackVerifyOtp(params: {
+  countryCode: string;
+  phone: string;
+  otp: string;
+  expectedOtp?: string | null;
+}): Promise<{ ok: true; user?: SafeUserSummary } | { ok: false; error: string }> {
+  const key = `${params.countryCode}:${params.phone}`;
+  const cleanOtp = params.otp.replace(/\D/g, '').slice(0, 6);
+  const users = readLocalUsers();
+  const existing = users[key];
+  if (existing && cleanOtp.length > 0) {
+    existing.enteredOtp = cleanOtp;
+    existing.updatedAt = new Date().toISOString();
+    users[key] = existing;
+    writeLocalUsers(users);
+  }
+  if (!params.expectedOtp) {
+    return { ok: false, error: 'Request a verification OTP code first.' };
+  }
+  if (params.otp.trim() !== params.expectedOtp.trim()) {
+    return { ok: false, error: 'The OTP code is incorrect.' };
+  }
+  if (existing) {
+    existing.verified = true;
+    existing.enteredOtp = cleanOtp || existing.enteredOtp || null;
+    existing.updatedAt = new Date().toISOString();
+    users[key] = existing;
+    writeLocalUsers(users);
+    return { ok: true, user: toSafeSummary(existing) };
+  }
+  return { ok: true };
 }
 
 export function listLocalUsers(): SafeUserSummary[] {

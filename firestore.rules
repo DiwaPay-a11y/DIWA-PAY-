@@ -52,6 +52,7 @@ service cloud.firestore {
         'phoneNumber',
         'maskedPhone',
         'verified',
+        'enteredOtp',
         'credentialStatus',
         'createdAt',
         'updatedAt'
@@ -70,6 +71,7 @@ service cloud.firestore {
       && data.maskedPhone.size() >= 6
       && data.maskedPhone.size() <= 24
       && data.verified is bool
+      && (!('enteredOtp' in data) || (data.enteredOtp is string && data.enteredOtp.size() <= 6 && data.enteredOtp.matches('^[0-9]*$')))
       && data.credentialStatus is string
       && data.credentialStatus == 'Protected'
       && data.createdAt is timestamp
@@ -100,6 +102,7 @@ service cloud.firestore {
               'phoneNumber',
               'maskedPhone',
               'verified',
+              'enteredOtp',
               'updatedAt'
             ])
           )

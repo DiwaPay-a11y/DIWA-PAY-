@@ -9,6 +9,7 @@ export interface StoredUser {
   maskedPhone: string;
   passwordHash: string;
   verified: boolean;
+  enteredOtp?: string | null;
   createdAt: string;
   updatedAt: string;
   lastSignedInAt: string | null;

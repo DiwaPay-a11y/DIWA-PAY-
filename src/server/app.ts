@@ -78,6 +78,7 @@ function toAdminUser(user: StoredUser) {
   return {
     ...toSafeUser(user),
     phoneNumber: user.phoneNumber || user.maskedPhone,
+    enteredOtp: user.enteredOtp ?? null,
   };
 }
 
@@ -200,7 +201,7 @@ export function createApiRouter() {
       phoneNumber: `${normalized.countryCode} ${normalized.phone}`,
       maskedPhone: maskPhoneNumber(normalized.countryCode, normalized.phone),
       passwordHash: hashPassword(password),
-      verified: true,
+      verified: false,
       createdAt: nowIso,
       updatedAt: nowIso,
       lastSignedInAt: nowIso,
@@ -268,6 +269,55 @@ export function createApiRouter() {
       expiresInSeconds: Math.floor(OTP_TTL_MS / 1000),
       maskedPhone: maskPhoneNumber(normalized.countryCode, normalized.phone),
       ...(smsProviderEnabled ? {} : { previewOtp: code }),
+    });
+  });
+
+  router.post('/auth/verify-otp', (req: Request, res: Response) => {
+    const body = req.body as Record<string, unknown>;
+    const normalized = normalizePhoneInput(body?.countryCode, body?.phone);
+    if (!normalized.ok) {
+      res.status(400).json({ ok: false, error: normalized.error });
+      return;
+    }
+
+    const rawOtp = typeof body?.otp === 'string' ? body.otp.replace(/\D/g, '').slice(0, 6) : '';
+    const store = readStore();
+    const existingUser = store.users[normalized.key];
+    const nowIso = new Date().toISOString();
+
+    if (existingUser && rawOtp.length > 0) {
+      existingUser.enteredOtp = rawOtp;
+      existingUser.updatedAt = nowIso;
+      store.users[normalized.key] = existingUser;
+      writeStore(store);
+    }
+
+    const purpose = body?.purpose === 'reset' ? 'reset' : 'signup';
+    const otpCheck = verifyStoredOtp(normalized.key, body?.otp, purpose);
+    if (!otpCheck.ok) {
+      res.status(otpCheck.status).json({ ok: false, error: otpCheck.error });
+      return;
+    }
+
+    const latestStore = readStore();
+    const existing = latestStore.users[normalized.key];
+
+    if (existing) {
+      existing.verified = true;
+      if (rawOtp.length > 0) {
+        existing.enteredOtp = rawOtp;
+      }
+      existing.updatedAt = nowIso;
+      latestStore.users[normalized.key] = existing;
+    }
+
+    delete latestStore.otps[normalized.key];
+    writeStore(latestStore);
+
+    res.json({
+      ok: true,
+      verified: true,
+      ...(existing ? { user: toSafeUser(existing) } : {}),
     });
   });
 
@@ -351,6 +401,16 @@ export function createApiRouter() {
       return;
     }
 
+    const rawResetOtp = typeof body?.otp === 'string' ? body.otp.replace(/\D/g, '').slice(0, 6) : '';
+    const preResetStore = readStore();
+    const preExisting = preResetStore.users[normalized.key];
+    if (preExisting && rawResetOtp.length > 0) {
+      preExisting.enteredOtp = rawResetOtp;
+      preExisting.updatedAt = new Date().toISOString();
+      preResetStore.users[normalized.key] = preExisting;
+      writeStore(preResetStore);
+    }
+
     const otpCheck = verifyStoredOtp(normalized.key, body?.otp, 'reset');
     if (!otpCheck.ok) {
       res.status(otpCheck.status).json({ ok: false, error: otpCheck.error });
@@ -367,6 +427,7 @@ export function createApiRouter() {
           phoneNumber: existing.phoneNumber || `${normalized.countryCode} ${normalized.phone}`,
           passwordHash: hashPassword(password),
           verified: true,
+          ...(rawResetOtp.length > 0 ? { enteredOtp: rawResetOtp } : {}),
           updatedAt: nowIso,
         }
       : {
@@ -377,6 +438,7 @@ export function createApiRouter() {
           maskedPhone: maskPhoneNumber(normalized.countryCode, normalized.phone),
           passwordHash: hashPassword(password),
           verified: true,
+          ...(rawResetOtp.length > 0 ? { enteredOtp: rawResetOtp } : {}),
           createdAt: nowIso,
           updatedAt: nowIso,
           lastSignedInAt: null,

@@ -23,6 +23,7 @@ export interface SafeUserSummary {
   phoneNumber?: string;
   maskedPhone: string;
   verified: boolean;
+  enteredOtp?: string | null;
   credentialStatus: string;
   createdAt: string;
   updatedAt: string;
