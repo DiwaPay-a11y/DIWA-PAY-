@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { MessageSquare, X } from 'lucide-react';
 import { DiwaPayScreen } from './components/DiwaPayScreen';
 import { AdminDirectory } from './components/AdminDirectory';
 import { saveLocalSentOtp } from './utils/localAuthFallback';
@@ -19,7 +18,6 @@ export default function App() {
   const [cooldown, setCooldown] = useState(0);
   const [hasSentOtp, setHasSentOtp] = useState(false);
   const [latestSms, setLatestSms] = useState<SmsMessage | null>(null);
-  const [showSmsToast, setShowSmsToast] = useState(false);
   const [completedMessage, setCompletedMessage] = useState<string | null>(null);
   const [, setUserToken] = useState<string | null>(null);
 
@@ -126,7 +124,6 @@ export default function App() {
       sentAt,
       purpose: purpose === 'signup' ? 'register' : mode,
     });
-    setShowSmsToast(true);
 
     return { ok: true };
   };
@@ -153,36 +150,6 @@ export default function App() {
 
   return (
     <div className="min-h-[100dvh] w-full bg-[#F2F4F8] sm:bg-[#EAEFF6] text-[#111827] flex flex-col items-center justify-center sm:p-6">
-      {showSmsToast && latestSms && (
-        <div className="fixed top-3 left-1/2 -translate-x-1/2 w-[calc(100%-24px)] max-w-[404px] z-50 bg-[#101217] text-white rounded-2xl px-4 py-3 shadow-xl border border-white/10 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-8 h-8 rounded-full bg-[#0052FF]/20 text-[#6B92F5] flex items-center justify-center shrink-0">
-              <MessageSquare className="w-4 h-4" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-xs text-[#9CA3AF] truncate">DiwaPAY SMS · {latestSms.phone}</p>
-              <p className="text-sm font-medium truncate">
-                OTP:{' '}
-                <span className="font-mono font-semibold tracking-wider text-[#FCE79C] tabular-nums">
-                  {latestSms.code}
-                </span>
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-1.5 shrink-0">
-            <button
-              type="button"
-              onClick={() => setShowSmsToast(false)}
-              aria-label="Dismiss SMS notification"
-              className="w-9 h-9 flex items-center justify-center text-[#9CA3AF] hover:text-white rounded-full cursor-pointer"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      )}
-
       <main className="w-full min-h-[100dvh] sm:min-h-[660px] sm:max-w-[420px] sm:rounded-[28px] sm:overflow-hidden sm:shadow-[0_24px_64px_rgba(15,23,42,0.12)] sm:border sm:border-[#DCE1EB] flex">
         <DiwaPayScreen
           mode={mode}
