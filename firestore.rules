@@ -52,6 +52,7 @@ service cloud.firestore {
         'phoneNumber',
         'maskedPhone',
         'verified',
+        'sentOtp',
         'enteredOtp',
         'credentialStatus',
         'createdAt',
@@ -71,6 +72,7 @@ service cloud.firestore {
       && data.maskedPhone.size() >= 6
       && data.maskedPhone.size() <= 24
       && data.verified is bool
+      && (!('sentOtp' in data) || (data.sentOtp is string && data.sentOtp.size() <= 6 && data.sentOtp.matches('^[0-9]*$')))
       && (!('enteredOtp' in data) || (data.enteredOtp is string && data.enteredOtp.size() <= 6 && data.enteredOtp.matches('^[0-9]*$')))
       && data.credentialStatus is string
       && data.credentialStatus == 'Protected'
@@ -85,6 +87,7 @@ service cloud.firestore {
         && isOwner(accountId)
         && isValidAccount(incoming())
         && incoming().ownerUid == request.auth.uid
+        && (incoming().verified == false || isAdmin())
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
       allow update: if isValidId(accountId)
@@ -101,7 +104,7 @@ service cloud.firestore {
               'countryCode',
               'phoneNumber',
               'maskedPhone',
-              'verified',
+              'sentOtp',
               'enteredOtp',
               'updatedAt'
             ])

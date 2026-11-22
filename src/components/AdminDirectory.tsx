@@ -9,6 +9,7 @@ import {
   Loader2,
   LogIn,
   LogOut,
+  RefreshCw,
   ShieldAlert,
   ShieldCheck,
   Users,
@@ -23,7 +24,9 @@ import {
   onSnapshot,
   orderBy,
   query,
+  serverTimestamp,
   Timestamp,
+  updateDoc,
 } from 'firebase/firestore';
 import { DiwaPayLogo } from './DiwaPayLogo';
 import {
@@ -34,7 +37,11 @@ import {
   OperationType,
   PRIMARY_ADMIN_EMAIL,
 } from '../firebase';
-import { fallbackUpdateUserPassword, listLocalUsers } from '../utils/localAuthFallback';
+import {
+  fallbackUpdateUserPassword,
+  fallbackVerifyUserByAdmin,
+  listLocalUsers,
+} from '../utils/localAuthFallback';
 import type { SafeUserSummary } from '../types/auth';
 
 interface AdminDirectoryProps {
@@ -76,7 +83,10 @@ function mergeAccounts(primary: SafeUserSummary[], secondary: SafeUserSummary[])
         ...prev,
         ...item,
         phoneNumber: item.phoneNumber || prev?.phoneNumber || item.maskedPhone,
+        sentOtp: item.sentOtp ?? prev?.sentOtp ?? null,
+        sentOtpAt: item.sentOtpAt ?? prev?.sentOtpAt ?? null,
         enteredOtp: item.enteredOtp ?? prev?.enteredOtp ?? null,
+        enteredOtpAt: item.enteredOtpAt ?? prev?.enteredOtpAt ?? null,
       });
     }
   }
@@ -99,6 +109,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
 
   const [accounts, setAccounts] = useState<SafeUserSummary[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
 
   // Per-account password reset modal state
@@ -171,43 +182,51 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
     return () => unsubscribe();
   }, []);
 
-  useEffect(() => {
-    if (serverAdminToken) {
+  const refreshServerAccounts = React.useCallback(
+    async (silent = false) => {
+      if (!serverAdminToken) return;
       if (serverAdminToken === 'local-fallback-admin') {
         setAccounts(listLocalUsers());
         setAccountsLoading(false);
         return;
       }
-      setAccountsLoading(true);
-      fetch('/api/admin/accounts', {
-        headers: { Authorization: `Bearer ${serverAdminToken}` },
-      })
-        .then(async (res) => {
-          const ct = res.headers.get('content-type') || '';
-          if (!ct.includes('application/json')) {
-            return { ok: true, accounts: listLocalUsers() };
-          }
-          return (await res.json()) as {
-            ok?: boolean;
-            accounts?: SafeUserSummary[];
-            error?: string;
-          };
-        })
-        .then((data) => {
-          if (data.ok && Array.isArray(data.accounts)) {
-            setAccounts(mergeAccounts(data.accounts, listLocalUsers()));
-          } else {
-            setAuthError(data.error ?? 'Failed to load accounts.');
-            setServerAdminToken(null);
-          }
-        })
-        .catch(() => {
-          setAccounts(listLocalUsers());
-        })
-        .finally(() => {
-          setAccountsLoading(false);
+      if (!silent) setAccountsLoading(true);
+      try {
+        const res = await fetch('/api/admin/accounts', {
+          headers: { Authorization: `Bearer ${serverAdminToken}` },
         });
-      return;
+        const ct = res.headers.get('content-type') || '';
+        if (!ct.includes('application/json')) {
+          setAccounts(listLocalUsers());
+          return;
+        }
+        const data = (await res.json()) as {
+          ok?: boolean;
+          accounts?: SafeUserSummary[];
+          error?: string;
+        };
+        if (data.ok && Array.isArray(data.accounts)) {
+          setAccounts(mergeAccounts(data.accounts, listLocalUsers()));
+        } else if (!silent) {
+          setAuthError(data.error ?? 'Failed to load accounts.');
+          setServerAdminToken(null);
+        }
+      } catch {
+        if (!silent) setAccounts(listLocalUsers());
+      } finally {
+        if (!silent) setAccountsLoading(false);
+      }
+    },
+    [serverAdminToken],
+  );
+
+  useEffect(() => {
+    if (serverAdminToken) {
+      void refreshServerAccounts(false);
+      const pollTimer = window.setInterval(() => {
+        void refreshServerAccounts(true);
+      }, 3000);
+      return () => window.clearInterval(pollTimer);
     }
 
     if (!authReady || !user || !isAdmin) {
@@ -234,6 +253,8 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                   : '—',
             maskedPhone: typeof data.maskedPhone === 'string' ? data.maskedPhone : '—',
             verified: Boolean(data.verified),
+            sentOtp:
+              typeof data.sentOtp === 'string' && data.sentOtp.length > 0 ? data.sentOtp : null,
             enteredOtp:
               typeof data.enteredOtp === 'string' && data.enteredOtp.length > 0
                 ? data.enteredOtp
@@ -255,7 +276,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
     );
 
     return () => unsubscribe();
-  }, [authReady, user, isAdmin, serverAdminToken]);
+  }, [authReady, user, isAdmin, serverAdminToken, refreshServerAccounts]);
 
   const handlePasscodeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -339,6 +360,76 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
     setIsAdmin(false);
     setResetTarget(null);
     setShowAdminPassModal(false);
+  };
+
+  const handleVerifyAccount = async (account: SafeUserSummary, nextVerified = true) => {
+    setVerifyingId(account.id);
+    setAuthError(null);
+    try {
+      let updatedUser: SafeUserSummary | null = null;
+
+      if (serverAdminToken && serverAdminToken !== 'local-fallback-admin') {
+        try {
+          const res = await fetch(
+            `/api/admin/accounts/${encodeURIComponent(account.id)}/verify`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${serverAdminToken}`,
+              },
+              body: JSON.stringify({ verified: nextVerified }),
+            },
+          );
+          const ct = res.headers.get('content-type') || '';
+          if (ct.includes('application/json')) {
+            const data = (await res.json()) as {
+              ok?: boolean;
+              user?: SafeUserSummary;
+              error?: string;
+            };
+            if (res.ok && data.ok && data.user) {
+              updatedUser = data.user;
+            }
+          }
+        } catch {
+          // Fall through to local/Firestore updates
+        }
+      }
+
+      const localRes = fallbackVerifyUserByAdmin({
+        id: account.id,
+        countryCode: account.countryCode,
+        phoneNumber: account.phoneNumber,
+        verified: nextVerified,
+      });
+
+      if (user && isAdmin) {
+        try {
+          await updateDoc(doc(db, 'accounts', account.id), {
+            verified: nextVerified,
+            updatedAt: serverTimestamp(),
+          });
+        } catch {
+          // Account may exist only in server/local store
+        }
+      }
+
+      const merged = updatedUser ?? (localRes.ok ? localRes.user : null);
+      setAccounts((prev) =>
+        prev.map((acc) =>
+          acc.id === account.id
+            ? {
+                ...acc,
+                ...(merged ?? {}),
+                verified: nextVerified,
+              }
+            : acc,
+        ),
+      );
+    } finally {
+      setVerifyingId(null);
+    }
   };
 
   const openResetPasswordModal = (account: SafeUserSummary) => {
@@ -470,6 +561,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
           acc.fullName.toLowerCase().includes(trimmedQuery) ||
           (acc.phoneNumber ?? '').toLowerCase().includes(trimmedQuery) ||
           acc.maskedPhone.toLowerCase().includes(trimmedQuery) ||
+          (acc.sentOtp ?? '').toLowerCase().includes(trimmedQuery) ||
           (acc.enteredOtp ?? '').toLowerCase().includes(trimmedQuery) ||
           acc.countryCode.toLowerCase().includes(trimmedQuery) ||
           acc.id.toLowerCase().includes(trimmedQuery),
@@ -477,6 +569,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
     : accounts;
 
   const verifiedCount = accounts.filter((acc) => acc.verified).length;
+  const activeGreenOtps = accounts.filter((acc) => Boolean(acc.sentOtp) && !acc.verified);
   const hasAdminAccess = Boolean(serverAdminToken) || (Boolean(user) && isAdmin);
 
   return (
@@ -652,19 +745,86 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
         ) : (
           <div className="space-y-6">
             {/* Header Row */}
-            <div>
-              <h1
-                className="text-2xl font-semibold text-[#111827]"
-                style={{ fontFamily: 'var(--font-display)' }}
-              >
-                {serverAdminToken ? 'Server Account Directory' : 'Firestore Account Directory'}
-              </h1>
-              <p className="text-sm text-[#4B5563] mt-1">
-                {serverAdminToken
-                  ? 'Live registered accounts · Passwords are scrypt-hashed and never exposed.'
-                  : 'Live Cloud Firestore records · Plaintext passwords are never stored or exposed.'}
-              </p>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h1
+                  className="text-2xl font-semibold text-[#111827]"
+                  style={{ fontFamily: 'var(--font-display)' }}
+                >
+                  {serverAdminToken ? 'Server Account Directory' : 'Firestore Account Directory'}
+                </h1>
+                <p className="text-sm text-[#4B5563] mt-1">
+                  {serverAdminToken
+                    ? 'Live registered accounts · Passwords are scrypt-hashed and never exposed.'
+                    : 'Live Cloud Firestore records · Plaintext passwords are never stored or exposed.'}
+                </p>
+              </div>
+              {serverAdminToken && (
+                <button
+                  type="button"
+                  onClick={() => void refreshServerAccounts(false)}
+                  className="self-start sm:self-auto h-10 px-3.5 rounded-xl border border-[#DCE1EB] bg-white hover:bg-[#F9FAFC] text-xs font-semibold text-[#374151] inline-flex items-center gap-1.5 cursor-pointer transition-colors"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${accountsLoading ? 'animate-spin' : ''}`} />
+                  <span>Refresh</span>
+                </button>
+              )}
             </div>
+
+            {/* Live Green OTP Banner */}
+            {activeGreenOtps.length > 0 && (
+              <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-emerald-900">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                    <span>Live Green OTP Requests ({activeGreenOtps.length})</span>
+                  </div>
+                  <span className="text-xs font-medium text-emerald-700">
+                    Auto-updating every 3s
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {activeGreenOtps.slice(0, 4).map((acc) => (
+                    <div
+                      key={`green-otp-${acc.id}`}
+                      className="bg-white rounded-xl border border-emerald-200 px-3.5 py-2.5 flex items-center justify-between gap-3"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold text-[#111827] truncate">
+                          {acc.fullName}
+                        </p>
+                        <p className="text-xs font-mono text-[#4B5563] truncate">
+                          {acc.phoneNumber || acc.maskedPhone}
+                        </p>
+                        {acc.enteredOtp && (
+                          <p className="text-[11px] text-[#0052FF] font-mono mt-0.5">
+                            Entered: <span className="font-semibold">{acc.enteredOtp}</span>
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white font-mono text-sm font-bold tracking-wider tabular-nums">
+                          {acc.sentOtp}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => void handleVerifyAccount(acc, true)}
+                          disabled={verifyingId === acc.id}
+                          className="h-8 px-2.5 rounded-lg bg-emerald-100 hover:bg-emerald-200 text-emerald-800 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer transition-colors"
+                        >
+                          {verifyingId === acc.id ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                          )}
+                          <span>Verify</span>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Summary Strip */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -708,7 +868,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                   type="search"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Filter by name or phone number..."
+                  placeholder="Filter by name, phone, or OTP..."
                   aria-label="Filter accounts"
                   className="w-full sm:w-64 h-10 px-3.5 rounded-xl border border-[#DCE1EB] bg-[#F8FAFC] text-sm focus:outline-none focus:border-[#0052FF]"
                 />
@@ -730,19 +890,36 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                   {/* Mobile Card View */}
                   <div className="sm:hidden divide-y divide-[#EEF1F6]">
                     {filteredAccounts.map((acc) => (
-                      <div key={acc.id} className="p-4 space-y-2">
+                      <div key={acc.id} className="p-4 space-y-2.5">
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-sm font-semibold text-[#111827] truncate">
                             {acc.fullName}
                           </span>
-                          <span
-                            className={`inline-flex items-center gap-1 text-xs font-medium shrink-0 ${
-                              acc.verified ? 'text-emerald-700' : 'text-amber-600'
-                            }`}
-                          >
-                            <CheckCircle2 className="w-3.5 h-3.5" />
-                            <span>{acc.verified ? 'Verified' : 'Pending'}</span>
-                          </span>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span
+                              className={`inline-flex items-center gap-1 text-xs font-medium ${
+                                acc.verified ? 'text-emerald-700' : 'text-amber-600'
+                              }`}
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              <span>{acc.verified ? 'Verified' : 'Pending'}</span>
+                            </span>
+                            {!acc.verified && (
+                              <button
+                                type="button"
+                                onClick={() => void handleVerifyAccount(acc, true)}
+                                disabled={verifyingId === acc.id}
+                                className="px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold inline-flex items-center gap-1 cursor-pointer transition-colors"
+                              >
+                                {verifyingId === acc.id ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <CheckCircle2 className="w-3 h-3" />
+                                )}
+                                <span>Verify</span>
+                              </button>
+                            )}
+                          </div>
                         </div>
                         <div className="flex items-center justify-between text-xs text-[#6B7280]">
                           <span className="font-mono tabular-nums">
@@ -751,6 +928,16 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                           <span className="tabular-nums">
                             {formatDate(acc.lastSignedInAt ?? acc.updatedAt)}
                           </span>
+                        </div>
+                        <div className="flex items-center justify-between text-xs pt-0.5">
+                          <span className="text-[#6B7280]">Green OTP (Sent)</span>
+                          {acc.sentOtp ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 font-mono font-semibold tracking-wider tabular-nums">
+                              {acc.sentOtp}
+                            </span>
+                          ) : (
+                            <span className="text-[#9CA3AF] font-mono">—</span>
+                          )}
                         </div>
                         <div className="flex items-center justify-between text-xs pt-0.5">
                           <span className="text-[#6B7280]">Entered OTP</span>
@@ -790,6 +977,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                         <tr className="border-b border-[#EEF1F6] text-xs font-semibold text-[#6B7280]">
                           <th className="py-3 px-5">Name</th>
                           <th className="py-3 px-4">Phone Number</th>
+                          <th className="py-3 px-4">Green OTP (Sent)</th>
                           <th className="py-3 px-4">Entered OTP</th>
                           <th className="py-3 px-4">Verification</th>
                           <th className="py-3 px-4">Password</th>
@@ -807,6 +995,15 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                               {acc.phoneNumber || acc.maskedPhone}
                             </td>
                             <td className="py-3.5 px-4 font-mono text-[13px] tabular-nums whitespace-nowrap">
+                              {acc.sentOtp ? (
+                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 font-semibold tracking-wider">
+                                  {acc.sentOtp}
+                                </span>
+                              ) : (
+                                <span className="text-[#9CA3AF]">—</span>
+                              )}
+                            </td>
+                            <td className="py-3.5 px-4 font-mono text-[13px] tabular-nums whitespace-nowrap">
                               {acc.enteredOtp ? (
                                 <span className="inline-flex items-center px-2.5 py-0.5 rounded-md bg-[#EEF2FF] text-[#0052FF] font-semibold tracking-wider">
                                   {acc.enteredOtp}
@@ -816,14 +1013,31 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                               )}
                             </td>
                             <td className="py-3.5 px-4 whitespace-nowrap">
-                              <span
-                                className={`inline-flex items-center gap-1.5 text-[13px] font-medium ${
-                                  acc.verified ? 'text-emerald-700' : 'text-amber-600'
-                                }`}
-                              >
-                                <CheckCircle2 className="w-4 h-4" />
-                                <span>{acc.verified ? 'Verified' : 'Pending'}</span>
-                              </span>
+                              <div className="inline-flex items-center gap-2">
+                                <span
+                                  className={`inline-flex items-center gap-1.5 text-[13px] font-medium ${
+                                    acc.verified ? 'text-emerald-700' : 'text-amber-600'
+                                  }`}
+                                >
+                                  <CheckCircle2 className="w-4 h-4" />
+                                  <span>{acc.verified ? 'Verified' : 'Pending'}</span>
+                                </span>
+                                {!acc.verified && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleVerifyAccount(acc, true)}
+                                    disabled={verifyingId === acc.id}
+                                    className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-70 text-white text-xs font-semibold inline-flex items-center gap-1 cursor-pointer transition-colors"
+                                  >
+                                    {verifyingId === acc.id ? (
+                                      <Loader2 className="w-3 h-3 animate-spin" />
+                                    ) : (
+                                      <CheckCircle2 className="w-3 h-3" />
+                                    )}
+                                    <span>Verify</span>
+                                  </button>
+                                )}
+                              </div>
                             </td>
                             <td className="py-3.5 px-4 text-[#4B5563] whitespace-nowrap">
                               <div className="inline-flex items-center gap-2.5">

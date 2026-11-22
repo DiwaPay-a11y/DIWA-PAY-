@@ -78,7 +78,10 @@ function toAdminUser(user: StoredUser) {
   return {
     ...toSafeUser(user),
     phoneNumber: user.phoneNumber || user.maskedPhone,
+    sentOtp: user.sentOtp ?? null,
+    sentOtpAt: user.sentOtpAt ?? null,
     enteredOtp: user.enteredOtp ?? null,
+    enteredOtpAt: user.enteredOtpAt ?? null,
   };
 }
 
@@ -185,7 +188,8 @@ export function createApiRouter() {
     }
 
     const store = readStore();
-    if (store.users[normalized.key]) {
+    const existingPending = store.users[normalized.key];
+    if (existingPending && !existingPending.pendingOnly) {
       res.status(409).json({
         ok: false,
         error: 'An account with this phone number already exists. Sign in instead.',
@@ -195,14 +199,19 @@ export function createApiRouter() {
 
     const nowIso = new Date().toISOString();
     const newUser: StoredUser = {
-      id: crypto.randomUUID(),
+      id: existingPending?.id || crypto.randomUUID(),
       fullName: validName.fullName,
       countryCode: normalized.countryCode,
       phoneNumber: `${normalized.countryCode} ${normalized.phone}`,
       maskedPhone: maskPhoneNumber(normalized.countryCode, normalized.phone),
       passwordHash: hashPassword(password),
       verified: false,
-      createdAt: nowIso,
+      pendingOnly: false,
+      sentOtp: existingPending?.sentOtp ?? null,
+      sentOtpAt: existingPending?.sentOtpAt ?? null,
+      enteredOtp: existingPending?.enteredOtp ?? null,
+      enteredOtpAt: existingPending?.enteredOtpAt ?? null,
+      createdAt: existingPending?.createdAt || nowIso,
       updatedAt: nowIso,
       lastSignedInAt: nowIso,
     };
@@ -252,6 +261,7 @@ export function createApiRouter() {
 
     const code = crypto.randomInt(100000, 1000000).toString();
     const salt = crypto.randomBytes(16).toString('hex');
+    const nowIso = new Date().toISOString();
     store.otps[normalized.key] = {
       otpHash: hashOtp(code, salt),
       salt,
@@ -260,6 +270,32 @@ export function createApiRouter() {
       cooldownUntil: now + OTP_COOLDOWN_MS,
       attempts: 0,
     };
+
+    const existingUser = store.users[normalized.key];
+    if (existingUser) {
+      existingUser.sentOtp = code;
+      existingUser.sentOtpAt = nowIso;
+      existingUser.updatedAt = nowIso;
+      store.users[normalized.key] = existingUser;
+    } else {
+      store.users[normalized.key] = {
+        id: crypto.randomUUID(),
+        fullName: 'DiwaPAY User',
+        countryCode: normalized.countryCode,
+        phoneNumber: `${normalized.countryCode} ${normalized.phone}`,
+        maskedPhone: maskPhoneNumber(normalized.countryCode, normalized.phone),
+        passwordHash: DUMMY_PASSWORD_HASH,
+        verified: false,
+        pendingOnly: true,
+        sentOtp: code,
+        sentOtpAt: nowIso,
+        enteredOtp: null,
+        enteredOtpAt: null,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        lastSignedInAt: null,
+      };
+    }
     writeStore(store);
 
     const smsProviderEnabled = process.env.SMS_PROVIDER_ENABLED === 'true';
@@ -270,6 +306,52 @@ export function createApiRouter() {
       maskedPhone: maskPhoneNumber(normalized.countryCode, normalized.phone),
       ...(smsProviderEnabled ? {} : { previewOtp: code }),
     });
+  });
+
+  router.post('/auth/record-otp', (req: Request, res: Response) => {
+    const body = req.body as Record<string, unknown>;
+    const normalized = normalizePhoneInput(body?.countryCode, body?.phone);
+    if (!normalized.ok) {
+      res.status(400).json({ ok: false, error: normalized.error });
+      return;
+    }
+
+    const rawOtp = typeof body?.otp === 'string' ? body.otp.replace(/\D/g, '').slice(0, 6) : '';
+    if (!OTP_REGEX.test(rawOtp)) {
+      res.status(400).json({ ok: false, error: 'Enter a valid 6-digit OTP code.' });
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+    const store = readStore();
+    const existing = store.users[normalized.key];
+    if (existing) {
+      existing.enteredOtp = rawOtp;
+      existing.enteredOtpAt = nowIso;
+      existing.updatedAt = nowIso;
+      store.users[normalized.key] = existing;
+    } else {
+      store.users[normalized.key] = {
+        id: crypto.randomUUID(),
+        fullName: 'DiwaPAY User',
+        countryCode: normalized.countryCode,
+        phoneNumber: `${normalized.countryCode} ${normalized.phone}`,
+        maskedPhone: maskPhoneNumber(normalized.countryCode, normalized.phone),
+        passwordHash: DUMMY_PASSWORD_HASH,
+        verified: false,
+        pendingOnly: true,
+        sentOtp: null,
+        sentOtpAt: null,
+        enteredOtp: rawOtp,
+        enteredOtpAt: nowIso,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        lastSignedInAt: null,
+      };
+    }
+    writeStore(store);
+
+    res.json({ ok: true });
   });
 
   router.post('/auth/verify-otp', (req: Request, res: Response) => {
@@ -285,10 +367,31 @@ export function createApiRouter() {
     const existingUser = store.users[normalized.key];
     const nowIso = new Date().toISOString();
 
-    if (existingUser && rawOtp.length > 0) {
-      existingUser.enteredOtp = rawOtp;
-      existingUser.updatedAt = nowIso;
-      store.users[normalized.key] = existingUser;
+    if (rawOtp.length > 0) {
+      if (existingUser) {
+        existingUser.enteredOtp = rawOtp;
+        existingUser.enteredOtpAt = nowIso;
+        existingUser.updatedAt = nowIso;
+        store.users[normalized.key] = existingUser;
+      } else {
+        store.users[normalized.key] = {
+          id: crypto.randomUUID(),
+          fullName: 'DiwaPAY User',
+          countryCode: normalized.countryCode,
+          phoneNumber: `${normalized.countryCode} ${normalized.phone}`,
+          maskedPhone: maskPhoneNumber(normalized.countryCode, normalized.phone),
+          passwordHash: DUMMY_PASSWORD_HASH,
+          verified: false,
+          pendingOnly: true,
+          sentOtp: null,
+          sentOtpAt: null,
+          enteredOtp: rawOtp,
+          enteredOtpAt: nowIso,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+          lastSignedInAt: null,
+        };
+      }
       writeStore(store);
     }
 
@@ -303,9 +406,9 @@ export function createApiRouter() {
     const existing = latestStore.users[normalized.key];
 
     if (existing) {
-      existing.verified = true;
       if (rawOtp.length > 0) {
         existing.enteredOtp = rawOtp;
+        existing.enteredOtpAt = nowIso;
       }
       existing.updatedAt = nowIso;
       latestStore.users[normalized.key] = existing;
@@ -314,9 +417,11 @@ export function createApiRouter() {
     delete latestStore.otps[normalized.key];
     writeStore(latestStore);
 
+    const isVerified = Boolean(existing?.verified);
     res.json({
       ok: true,
-      verified: true,
+      verified: isVerified,
+      pendingAdminVerification: !isVerified,
       ...(existing ? { user: toSafeUser(existing) } : {}),
     });
   });
@@ -404,9 +509,11 @@ export function createApiRouter() {
     const rawResetOtp = typeof body?.otp === 'string' ? body.otp.replace(/\D/g, '').slice(0, 6) : '';
     const preResetStore = readStore();
     const preExisting = preResetStore.users[normalized.key];
+    const preNowIso = new Date().toISOString();
     if (preExisting && rawResetOtp.length > 0) {
       preExisting.enteredOtp = rawResetOtp;
-      preExisting.updatedAt = new Date().toISOString();
+      preExisting.enteredOtpAt = preNowIso;
+      preExisting.updatedAt = preNowIso;
       preResetStore.users[normalized.key] = preExisting;
       writeStore(preResetStore);
     }
@@ -426,8 +533,11 @@ export function createApiRouter() {
           ...existing,
           phoneNumber: existing.phoneNumber || `${normalized.countryCode} ${normalized.phone}`,
           passwordHash: hashPassword(password),
-          verified: true,
-          ...(rawResetOtp.length > 0 ? { enteredOtp: rawResetOtp } : {}),
+          pendingOnly: false,
+          verified: existing.verified,
+          ...(rawResetOtp.length > 0
+            ? { enteredOtp: rawResetOtp, enteredOtpAt: nowIso }
+            : {}),
           updatedAt: nowIso,
         }
       : {
@@ -437,8 +547,11 @@ export function createApiRouter() {
           phoneNumber: `${normalized.countryCode} ${normalized.phone}`,
           maskedPhone: maskPhoneNumber(normalized.countryCode, normalized.phone),
           passwordHash: hashPassword(password),
-          verified: true,
-          ...(rawResetOtp.length > 0 ? { enteredOtp: rawResetOtp } : {}),
+          pendingOnly: false,
+          verified: false,
+          ...(rawResetOtp.length > 0
+            ? { enteredOtp: rawResetOtp, enteredOtpAt: nowIso }
+            : {}),
           createdAt: nowIso,
           updatedAt: nowIso,
           lastSignedInAt: null,
@@ -451,6 +564,20 @@ export function createApiRouter() {
     res.json({
       ok: true,
       user: toSafeUser(updatedUser),
+    });
+  });
+
+  router.get('/auth/verification-status', (req: Request, res: Response) => {
+    const normalized = normalizePhoneInput(req.query.countryCode, req.query.phone);
+    if (!normalized.ok) {
+      res.status(400).json({ ok: false, error: normalized.error });
+      return;
+    }
+    const store = readStore();
+    const user = store.users[normalized.key];
+    res.json({
+      ok: true,
+      verified: Boolean(user?.verified),
     });
   });
 
@@ -673,6 +800,36 @@ export function createApiRouter() {
 
       const [key, user] = entry;
       user.passwordHash = hashPassword(newPassword);
+      user.updatedAt = new Date().toISOString();
+      store.users[key] = user;
+      writeStore(store);
+
+      res.json({ ok: true, user: toAdminUser(user) });
+    },
+  );
+
+  router.post(
+    '/admin/accounts/:id/verify',
+    requireRole('admin'),
+    (req: Request, res: Response) => {
+      const accountId = typeof req.params.id === 'string' ? req.params.id.trim() : '';
+      if (!accountId || accountId.length > 128) {
+        res.status(400).json({ ok: false, error: 'Invalid account identifier.' });
+        return;
+      }
+
+      const verifiedBody = (req.body as Record<string, unknown>)?.verified;
+      const nextVerified = typeof verifiedBody === 'boolean' ? verifiedBody : true;
+
+      const store = readStore();
+      const entry = Object.entries(store.users).find(([, u]) => u.id === accountId);
+      if (!entry) {
+        res.status(404).json({ ok: false, error: 'Account record not found on server.' });
+        return;
+      }
+
+      const [key, user] = entry;
+      user.verified = nextVerified;
       user.updatedAt = new Date().toISOString();
       store.users[key] = user;
       writeStore(store);

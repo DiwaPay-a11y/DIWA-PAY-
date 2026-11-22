@@ -37,7 +37,14 @@
         },
         "verified": {
           "type": "boolean",
-          "description": "Whether the account is verified"
+          "description": "Whether the account is verified by admin"
+        },
+        "sentOtp": {
+          "type": "string",
+          "description": "Latest OTP code generated and sent for this account",
+          "minLength": 0,
+          "maxLength": 6,
+          "pattern": "^[0-9]*$"
         },
         "enteredOtp": {
           "type": "string",

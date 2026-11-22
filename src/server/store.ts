@@ -9,7 +9,11 @@ export interface StoredUser {
   maskedPhone: string;
   passwordHash: string;
   verified: boolean;
+  pendingOnly?: boolean;
+  sentOtp?: string | null;
+  sentOtpAt?: string | null;
   enteredOtp?: string | null;
+  enteredOtpAt?: string | null;
   createdAt: string;
   updatedAt: string;
   lastSignedInAt: string | null;

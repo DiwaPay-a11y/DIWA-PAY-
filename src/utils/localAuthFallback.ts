@@ -9,7 +9,10 @@ interface LocalUserRecord {
   salt: string;
   passwordHash: string;
   verified: boolean;
+  sentOtp?: string | null;
+  sentOtpAt?: string | null;
   enteredOtp?: string | null;
+  enteredOtpAt?: string | null;
   createdAt: string;
   updatedAt: string;
   lastSignedInAt: string | null;
@@ -60,12 +63,85 @@ function toSafeSummary(record: LocalUserRecord): SafeUserSummary {
     phoneNumber: record.phoneNumber || record.maskedPhone,
     maskedPhone: record.maskedPhone,
     verified: record.verified,
+    sentOtp: record.sentOtp ?? null,
+    sentOtpAt: record.sentOtpAt ?? null,
     enteredOtp: record.enteredOtp ?? null,
+    enteredOtpAt: record.enteredOtpAt ?? null,
     credentialStatus: 'Protected',
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     lastSignedInAt: record.lastSignedInAt,
   };
+}
+
+export async function saveLocalSentOtp(params: {
+  fullName?: string;
+  countryCode: string;
+  phone: string;
+  sentOtp: string;
+}): Promise<void> {
+  const key = `${params.countryCode}:${params.phone}`;
+  const users = readLocalUsers();
+  const existing = users[key];
+  const nowIso = new Date().toISOString();
+
+  if (existing) {
+    users[key] = {
+      ...existing,
+      sentOtp: params.sentOtp,
+      sentOtpAt: nowIso,
+      updatedAt: nowIso,
+    };
+  } else {
+    const salt = generateSalt();
+    const passwordHash = await hashSecret(generateSalt(), salt);
+    users[key] = {
+      id: window.crypto.randomUUID(),
+      fullName: params.fullName?.trim() || 'DiwaPAY User',
+      countryCode: params.countryCode,
+      phoneNumber: `${params.countryCode} ${params.phone}`,
+      maskedPhone: maskPhone(params.countryCode, params.phone),
+      salt,
+      passwordHash,
+      verified: false,
+      sentOtp: params.sentOtp,
+      sentOtpAt: nowIso,
+      enteredOtp: null,
+      enteredOtpAt: null,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      lastSignedInAt: null,
+    };
+  }
+  writeLocalUsers(users);
+}
+
+export async function saveLocalEnteredOtp(params: {
+  countryCode: string;
+  phone: string;
+  enteredOtp: string;
+}): Promise<void> {
+  const cleanOtp = params.enteredOtp.replace(/\D/g, '').slice(0, 6);
+  if (cleanOtp.length !== 6) return;
+  const key = `${params.countryCode}:${params.phone}`;
+  const users = readLocalUsers();
+  const existing = users[key];
+  const nowIso = new Date().toISOString();
+  if (existing) {
+    users[key] = {
+      ...existing,
+      enteredOtp: cleanOtp,
+      enteredOtpAt: nowIso,
+      updatedAt: nowIso,
+    };
+    writeLocalUsers(users);
+  }
+}
+
+export function getLocalVerificationStatus(countryCode: string, phone: string): boolean {
+  const key = `${countryCode}:${phone}`;
+  const users = readLocalUsers();
+  return Boolean(users[key]?.verified);
 }
 
 export async function saveLocalBackup(params: {
@@ -75,6 +151,7 @@ export async function saveLocalBackup(params: {
   phone: string;
   password: string;
   verified?: boolean;
+  sentOtp?: string | null;
   enteredOtp?: string | null;
 }): Promise<void> {
   const key = `${params.countryCode}:${params.phone}`;
@@ -92,8 +169,11 @@ export async function saveLocalBackup(params: {
     maskedPhone: maskPhone(params.countryCode, params.phone),
     salt,
     passwordHash,
-    verified: params.verified ?? existing?.verified ?? true,
+    verified: params.verified ?? existing?.verified ?? false,
+    sentOtp: params.sentOtp ?? existing?.sentOtp ?? null,
+    sentOtpAt: existing?.sentOtpAt ?? null,
     enteredOtp: params.enteredOtp ?? existing?.enteredOtp ?? null,
+    enteredOtpAt: params.enteredOtp ? nowIso : existing?.enteredOtpAt ?? null,
     createdAt: existing?.createdAt || nowIso,
     updatedAt: nowIso,
     lastSignedInAt: nowIso,
@@ -191,8 +271,9 @@ export async function fallbackResetPassword(params: {
         phoneNumber: existing.phoneNumber || `${params.countryCode} ${params.phone}`,
         salt,
         passwordHash,
-        verified: true,
+        verified: existing.verified,
         enteredOtp: cleanOtp || existing.enteredOtp || null,
+        enteredOtpAt: cleanOtp ? nowIso : existing.enteredOtpAt ?? null,
         updatedAt: nowIso,
       }
     : {
@@ -203,8 +284,9 @@ export async function fallbackResetPassword(params: {
         maskedPhone: maskPhone(params.countryCode, params.phone),
         salt,
         passwordHash,
-        verified: true,
+        verified: false,
         enteredOtp: cleanOtp || null,
+        enteredOtpAt: cleanOtp ? nowIso : null,
         createdAt: nowIso,
         updatedAt: nowIso,
         lastSignedInAt: null,
@@ -224,9 +306,11 @@ export async function fallbackVerifyOtp(params: {
   const cleanOtp = params.otp.replace(/\D/g, '').slice(0, 6);
   const users = readLocalUsers();
   const existing = users[key];
+  const nowIso = new Date().toISOString();
   if (existing && cleanOtp.length > 0) {
     existing.enteredOtp = cleanOtp;
-    existing.updatedAt = new Date().toISOString();
+    existing.enteredOtpAt = nowIso;
+    existing.updatedAt = nowIso;
     users[key] = existing;
     writeLocalUsers(users);
   }
@@ -237,9 +321,9 @@ export async function fallbackVerifyOtp(params: {
     return { ok: false, error: 'The OTP code is incorrect.' };
   }
   if (existing) {
-    existing.verified = true;
     existing.enteredOtp = cleanOtp || existing.enteredOtp || null;
-    existing.updatedAt = new Date().toISOString();
+    existing.enteredOtpAt = cleanOtp ? nowIso : existing.enteredOtpAt ?? null;
+    existing.updatedAt = nowIso;
     users[key] = existing;
     writeLocalUsers(users);
     return { ok: true, user: toSafeSummary(existing) };
@@ -277,6 +361,35 @@ export async function fallbackUpdateUserPassword(params: {
     salt,
     passwordHash,
     updatedAt: nowIso,
+  };
+  users[key] = updated;
+  writeLocalUsers(users);
+  return { ok: true, user: toSafeSummary(updated) };
+}
+
+export function fallbackVerifyUserByAdmin(params: {
+  id: string;
+  countryCode?: string;
+  phoneNumber?: string;
+  verified?: boolean;
+}): { ok: true; user: SafeUserSummary } | { ok: false; error: string } {
+  const users = readLocalUsers();
+  const normalizedPhone = (params.phoneNumber ?? '').replace(/\s+/g, '');
+  const entry = Object.entries(users).find(([, record]) => {
+    if (record.id === params.id) return true;
+    const recordPhone = (record.phoneNumber ?? '').replace(/\s+/g, '');
+    return Boolean(normalizedPhone && recordPhone === normalizedPhone);
+  });
+
+  if (!entry) {
+    return { ok: false, error: 'Account not found in local directory.' };
+  }
+
+  const [key, record] = entry;
+  const updated: LocalUserRecord = {
+    ...record,
+    verified: params.verified ?? true,
+    updatedAt: new Date().toISOString(),
   };
   users[key] = updated;
   writeLocalUsers(users);
