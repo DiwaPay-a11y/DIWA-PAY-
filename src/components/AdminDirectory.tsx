@@ -66,9 +66,32 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
   const [signingIn, setSigningIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
+  // Server passcode admin state (works without Google popup or domain allowlist)
+  const [serverAdminConfigured, setServerAdminConfigured] = useState<boolean | null>(null);
+  const [serverAdminToken, setServerAdminToken] = useState<string | null>(null);
+  const [passcodeInput, setPasscodeInput] = useState('');
+  const [passcodeSubmitting, setPasscodeSubmitting] = useState(false);
+
   const [accounts, setAccounts] = useState<SafeUserSummary[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/admin/status')
+      .then((res) => res.json())
+      .then((data: { ok?: boolean; configured?: boolean }) => {
+        if (active && data.ok) {
+          setServerAdminConfigured(Boolean(data.configured));
+        }
+      })
+      .catch(() => {
+        if (active) setServerAdminConfigured(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (nextUser) => {
@@ -103,6 +126,29 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
   }, []);
 
   useEffect(() => {
+    if (serverAdminToken) {
+      setAccountsLoading(true);
+      fetch('/api/admin/accounts', {
+        headers: { Authorization: `Bearer ${serverAdminToken}` },
+      })
+        .then((res) => res.json())
+        .then((data: { ok?: boolean; accounts?: SafeUserSummary[]; error?: string }) => {
+          if (data.ok && Array.isArray(data.accounts)) {
+            setAccounts(data.accounts);
+          } else {
+            setAuthError(data.error ?? 'Failed to load accounts.');
+            setServerAdminToken(null);
+          }
+        })
+        .catch(() => {
+          setAuthError('Unable to load server account directory.');
+        })
+        .finally(() => {
+          setAccountsLoading(false);
+        });
+      return;
+    }
+
     if (!authReady || !user || !isAdmin) {
       setAccounts([]);
       return;
@@ -138,7 +184,38 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
     );
 
     return () => unsubscribe();
-  }, [authReady, user, isAdmin]);
+  }, [authReady, user, isAdmin, serverAdminToken]);
+
+  const handlePasscodeSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    if (!passcodeInput.trim()) {
+      setAuthError('Enter your admin passcode.');
+      return;
+    }
+
+    setPasscodeSubmitting(true);
+    try {
+      const endpoint = serverAdminConfigured ? '/api/admin/login' : '/api/admin/bootstrap';
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ passcode: passcodeInput }),
+      });
+      const data = (await res.json()) as { ok?: boolean; token?: string; error?: string };
+      if (!res.ok || !data.ok || !data.token) {
+        setAuthError(data.error ?? 'Admin authentication failed.');
+        return;
+      }
+      setServerAdminConfigured(true);
+      setServerAdminToken(data.token);
+      setPasscodeInput('');
+    } catch {
+      setAuthError('Unable to reach admin server.');
+    } finally {
+      setPasscodeSubmitting(false);
+    }
+  };
 
   const handleGoogleSignIn = async () => {
     setAuthError(null);
@@ -150,16 +227,14 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
       if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
         setAuthError('Google sign-in was cancelled.');
       } else if (code === 'auth/popup-blocked') {
-        setAuthError('Popup was blocked by browser. Please allow popups and try again.');
+        setAuthError('Popup was blocked by browser. Use Admin Passcode above or allow popups.');
       } else if (code === 'auth/unauthorized-domain') {
         setAuthError(
-          `Domain "${window.location.hostname}" is not authorized in Firebase Auth. Add it in Firebase Console → Authentication → Settings → Authorized domains.`,
+          `Domain "${window.location.hostname}" is not authorized in Firebase Auth. Use Admin Passcode above instead.`,
         );
       } else {
         const detail = code ? ` (${code})` : '';
-        setAuthError(
-          `Unable to sign in with Google${detail}. Check authorized domains in Firebase.`,
-        );
+        setAuthError(`Unable to sign in with Google${detail}. Use Admin Passcode above instead.`);
       }
     } finally {
       setSigningIn(false);
@@ -167,7 +242,10 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
   };
 
   const handleSignOut = async () => {
-    await signOut(auth);
+    if (user) {
+      await signOut(auth);
+    }
+    setServerAdminToken(null);
     setAccounts([]);
     setSearchQuery('');
     setIsAdmin(false);
@@ -185,6 +263,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
     : accounts;
 
   const verifiedCount = accounts.filter((acc) => acc.verified).length;
+  const hasAdminAccess = Boolean(serverAdminToken) || (Boolean(user) && isAdmin);
 
   return (
     <div className="min-h-[100dvh] w-full bg-[#F2F4F8] text-[#111827] flex flex-col">
@@ -211,7 +290,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
               <span>Auth Screen</span>
             </button>
 
-            {user && (
+            {(user || serverAdminToken) && (
               <button
                 type="button"
                 onClick={handleSignOut}
@@ -230,9 +309,9 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
         {!authReady || checkingRole ? (
           <div className="flex items-center justify-center py-20 text-[#6B7280] gap-2 text-sm">
             <Loader2 className="w-4 h-4 animate-spin" />
-            <span>Checking Firebase session...</span>
+            <span>Loading admin portal...</span>
           </div>
-        ) : !user ? (
+        ) : !hasAdminAccess && !user ? (
           <div className="max-w-md mx-auto bg-white rounded-2xl border border-[#DCE1EB] shadow-[0_12px_32px_rgba(15,23,42,0.06)] p-6 sm:p-8 mt-4 text-center">
             <div className="w-12 h-12 rounded-xl bg-[#0052FF]/10 text-[#0052FF] flex items-center justify-center mx-auto mb-4">
               <ShieldCheck className="w-6 h-6" />
@@ -244,8 +323,9 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
               Admin Sign In
             </h1>
             <p className="text-sm text-[#4B5563] mt-2 leading-relaxed">
-              Sign in with the authorized admin Google account ({PRIMARY_ADMIN_EMAIL}) to view live
-              Firestore account records.
+              {serverAdminConfigured === false
+                ? 'Set an admin passcode (min 8 characters) to view registered accounts.'
+                : 'Enter your admin passcode to view registered account records.'}
             </p>
 
             {authError && (
@@ -258,11 +338,48 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
               </div>
             )}
 
+            <form onSubmit={handlePasscodeSubmit} className="mt-5 space-y-3 text-left">
+              <input
+                type="password"
+                value={passcodeInput}
+                onChange={(e) => setPasscodeInput(e.target.value)}
+                placeholder={
+                  serverAdminConfigured === false
+                    ? 'Create admin passcode (8+ chars)'
+                    : 'Enter admin passcode'
+                }
+                aria-label="Admin passcode"
+                className="w-full h-12 px-4 rounded-xl border border-[#DCE1EB] bg-[#F8FAFC] text-sm text-[#111827] focus:outline-none focus:border-[#0052FF]"
+              />
+              <button
+                type="submit"
+                disabled={passcodeSubmitting}
+                className="w-full h-12 rounded-full bg-[#0052FF] hover:bg-[#0045D8] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              >
+                {passcodeSubmitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Verifying...</span>
+                  </>
+                ) : (
+                  <span>
+                    {serverAdminConfigured === false ? 'Create Passcode & Enter' : 'Unlock Directory'}
+                  </span>
+                )}
+              </button>
+            </form>
+
+            <div className="my-5 flex items-center gap-3 text-xs text-[#9CA3AF]">
+              <span className="h-px flex-1 bg-[#E5E7EB]" />
+              <span>or</span>
+              <span className="h-px flex-1 bg-[#E5E7EB]" />
+            </div>
+
             <button
               type="button"
               onClick={handleGoogleSignIn}
               disabled={signingIn}
-              className="mt-6 w-full h-12 rounded-full bg-[#0052FF] hover:bg-[#0045D8] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              className="w-full h-11 rounded-full border border-[#DCE1EB] hover:border-[#9CA3AF] text-[#111827] text-sm font-semibold inline-flex items-center justify-center gap-2 transition-colors cursor-pointer"
             >
               {signingIn ? (
                 <>
@@ -272,12 +389,12 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
               ) : (
                 <>
                   <LogIn className="w-4 h-4" />
-                  <span>Sign in with Google</span>
+                  <span>Sign in with Google (Firestore)</span>
                 </>
               )}
             </button>
           </div>
-        ) : !isAdmin ? (
+        ) : !hasAdminAccess && user && !isAdmin ? (
           <div className="max-w-md mx-auto bg-white rounded-2xl border border-[#DCE1EB] p-6 sm:p-8 mt-4 text-center space-y-4">
             <div className="w-12 h-12 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto">
               <ShieldAlert className="w-6 h-6" />
@@ -297,7 +414,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
               onClick={handleSignOut}
               className="w-full h-11 rounded-full border border-[#DCE1EB] hover:border-[#9CA3AF] text-sm font-semibold text-[#111827] transition-colors cursor-pointer"
             >
-              Switch Google Account
+              Switch Account
             </button>
           </div>
         ) : (
@@ -308,10 +425,12 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                 className="text-2xl font-semibold text-[#111827]"
                 style={{ fontFamily: 'var(--font-display)' }}
               >
-                Firestore Account Directory
+                {serverAdminToken ? 'Server Account Directory' : 'Firestore Account Directory'}
               </h1>
               <p className="text-sm text-[#4B5563] mt-1">
-                Live Cloud Firestore records · Plaintext passwords are never stored or exposed.
+                {serverAdminToken
+                  ? 'Live registered accounts · Passwords are scrypt-hashed and never exposed.'
+                  : 'Live Cloud Firestore records · Plaintext passwords are never stored or exposed.'}
               </p>
             </div>
 

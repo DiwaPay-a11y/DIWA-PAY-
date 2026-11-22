@@ -1,9 +1,8 @@
 import React, { useRef, useState } from 'react';
 import { Eye, EyeOff, CheckCircle2, AlertCircle, Loader2, ArrowLeft } from 'lucide-react';
-import { signInWithPopup } from 'firebase/auth';
 import { doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { DiwaPayLogo } from './DiwaPayLogo';
-import { auth, db, googleProvider, handleFirestoreError, OperationType } from '../firebase';
+import { auth, db, handleFirestoreError, OperationType } from '../firebase';
 import type { AuthFormState, AuthMode, SafeUserSummary } from '../types/auth';
 
 interface DiwaPayScreenProps {
@@ -197,36 +196,6 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
 
     setIsSubmitting(true);
     try {
-      // 1. Ensure verified Firebase Auth session so Firestore writes pass security rules
-      let currentUser = auth.currentUser;
-      if (!currentUser || !currentUser.emailVerified) {
-        try {
-          const cred = await signInWithPopup(auth, googleProvider);
-          currentUser = cred.user;
-        } catch (authErr) {
-          const code = (authErr as { code?: string })?.code;
-          if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-            setErrorMsg('Sign in with Google was cancelled. Complete sign-in to save to Firestore.');
-          } else if (code === 'auth/popup-blocked') {
-            setErrorMsg('Popup was blocked by browser. Allow popups to save to Firestore.');
-          } else if (code === 'auth/unauthorized-domain') {
-            setErrorMsg(
-              `Domain "${window.location.hostname}" is not authorized in Firebase Auth. Add it in Firebase Console → Authentication → Settings → Authorized domains.`,
-            );
-          } else {
-            const detail = code ? ` (${code})` : '';
-            setErrorMsg(`Google sign-in is required to verify your Firestore session${detail}.`);
-          }
-          return;
-        }
-      }
-
-      if (!currentUser || !currentUser.emailVerified) {
-        setErrorMsg('A verified Google account is required to save records.');
-        return;
-      }
-
-      // 2. Sync optional backend cache if available (never blocks Firestore persistence on Vercel)
       const endpoint =
         mode === 'register'
           ? '/api/auth/register'
@@ -255,7 +224,9 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
                 otp: form.otp,
               };
 
+      let backendUser: SafeUserSummary | null = null;
       let backendToken: string | undefined;
+
       try {
         const res = await fetch(endpoint, {
           method: 'POST',
@@ -267,44 +238,47 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
           const data = (await res.json()) as {
             ok: boolean;
             token?: string;
+            user?: SafeUserSummary;
             error?: string;
           };
-          if (res.ok && data.ok) {
+          if (res.ok && data.ok && data.user) {
+            backendUser = data.user;
             backendToken = data.token;
-          } else if (
-            res.status === 400 ||
-            res.status === 401 ||
-            res.status === 409 ||
-            res.status === 429
-          ) {
+          } else if (!res.ok) {
             setErrorMsg(data.error ?? 'Please check your entered details.');
             return;
           }
         }
       } catch {
-        // Continue directly to Firestore so static deployments (e.g. Vercel) succeed reliably
+        setErrorMsg('Unable to reach server. Please refresh and try again.');
+        return;
       }
 
-      // 3. Persist non-sensitive profile metadata permanently in Cloud Firestore
-      const firestoreUser = await syncProfileToFirestore(
-        currentUser.uid,
-        trimmedName || currentUser.displayName || 'DiwaPAY User',
-        form.countryCode,
-        form.phone,
-      );
+      if (!backendUser) {
+        setErrorMsg('Unable to process request right now. Please try again.');
+        return;
+      }
 
-      onSubmitSuccess({ user: firestoreUser, token: backendToken });
-    } catch (err) {
-      let friendly = 'Unable to save account to Firestore. Please try again.';
-      if (err instanceof Error && err.message) {
+      // Sync non-sensitive profile metadata to Cloud Firestore when already signed into Google
+      const currentUser = auth.currentUser;
+      if (currentUser && currentUser.emailVerified) {
         try {
-          const parsed = JSON.parse(err.message) as { error?: string };
-          if (parsed.error) {
-            friendly = parsed.error;
-          }
+          await syncProfileToFirestore(
+            currentUser.uid,
+            trimmedName || backendUser.fullName || currentUser.displayName || 'DiwaPAY User',
+            form.countryCode,
+            form.phone,
+          );
         } catch {
-          friendly = err.message;
+          // Structured error already logged via handleFirestoreError; do not block phone auth
         }
+      }
+
+      onSubmitSuccess({ user: backendUser, token: backendToken });
+    } catch (err) {
+      let friendly = 'Unable to complete request. Please try again.';
+      if (err instanceof Error && err.message) {
+        friendly = err.message;
       }
       setErrorMsg(friendly);
     } finally {
@@ -396,7 +370,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
               style={{ fontFamily: 'var(--font-display)' }}
             >
               {mode === 'register'
-                ? 'Saved to Firestore'
+                ? 'Account Processing'
                 : mode === 'reset'
                   ? 'Password Reset Complete'
                   : 'Signed In Successfully'}
@@ -414,7 +388,11 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
                 }}
                 className="w-full h-[50px] rounded-full bg-[#0052FF] hover:bg-[#0045D8] active:scale-[0.985] text-white font-semibold text-[15px] transition-all cursor-pointer"
               >
-                {mode === 'signin' ? 'Done' : 'Proceed to Sign In'}
+                {mode === 'signin'
+                  ? 'Done'
+                  : mode === 'register'
+                    ? 'Proceed to Verify'
+                    : 'Proceed to Sign In'}
               </button>
               <button
                 type="button"
