@@ -111,6 +111,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
       ? countryCode
       : '+91';
     const maskedPhone = maskPhone(safeCountryCode, phone);
+    const fullPhone = `${safeCountryCode} ${phone}`;
     const docPath = `accounts/${uid}`;
     const accountRef = doc(db, 'accounts', uid);
 
@@ -137,6 +138,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
           ownerUid: uid,
           fullName: finalName,
           countryCode: safeCountryCode,
+          phoneNumber: fullPhone,
           maskedPhone,
           verified: true,
           credentialStatus: 'Protected',
@@ -151,6 +153,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
         await updateDoc(accountRef, {
           ...(cleanName.length >= 2 ? { fullName: cleanName } : {}),
           countryCode: safeCountryCode,
+          phoneNumber: fullPhone,
           maskedPhone,
           verified: true,
           updatedAt: serverTimestamp(),
@@ -165,6 +168,7 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
       id: uid,
       fullName: finalName,
       countryCode: safeCountryCode,
+      phoneNumber: fullPhone,
       maskedPhone,
       verified: true,
       credentialStatus: 'Protected',
@@ -252,15 +256,13 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
           if (res.ok && data.ok && data.user) {
             backendUser = data.user;
             backendToken = data.token;
-            if (mode === 'register' || mode === 'reset') {
-              await saveLocalBackup({
-                id: data.user.id,
-                fullName: trimmedName || data.user.fullName,
-                countryCode: form.countryCode,
-                phone: form.phone,
-                password: form.password,
-              });
-            }
+            await saveLocalBackup({
+              id: data.user.id,
+              fullName: trimmedName || data.user.fullName,
+              countryCode: form.countryCode,
+              phone: form.phone,
+              password: form.password,
+            });
           } else if (res.status === 401 && mode === 'signin') {
             const localMatch = await fallbackSignIn({
               countryCode: form.countryCode,

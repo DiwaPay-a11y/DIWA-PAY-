@@ -74,6 +74,13 @@ function toSafeUser(user: StoredUser) {
   };
 }
 
+function toAdminUser(user: StoredUser) {
+  return {
+    ...toSafeUser(user),
+    phoneNumber: user.phoneNumber || user.maskedPhone,
+  };
+}
+
 function extractBearerToken(req: Request): string | null {
   const header = req.headers.authorization;
   if (typeof header !== 'string') return null;
@@ -190,6 +197,7 @@ export function createApiRouter() {
       id: crypto.randomUUID(),
       fullName: validName.fullName,
       countryCode: normalized.countryCode,
+      phoneNumber: `${normalized.countryCode} ${normalized.phone}`,
       maskedPhone: maskPhoneNumber(normalized.countryCode, normalized.phone),
       passwordHash: hashPassword(password),
       verified: true,
@@ -303,6 +311,7 @@ export function createApiRouter() {
       id: crypto.randomUUID(),
       fullName: validName.fullName,
       countryCode: normalized.countryCode,
+      phoneNumber: `${normalized.countryCode} ${normalized.phone}`,
       maskedPhone: maskPhoneNumber(normalized.countryCode, normalized.phone),
       passwordHash: hashPassword(password),
       verified: true,
@@ -355,6 +364,7 @@ export function createApiRouter() {
     const updatedUser: StoredUser = existing
       ? {
           ...existing,
+          phoneNumber: existing.phoneNumber || `${normalized.countryCode} ${normalized.phone}`,
           passwordHash: hashPassword(password),
           verified: true,
           updatedAt: nowIso,
@@ -363,6 +373,7 @@ export function createApiRouter() {
           id: crypto.randomUUID(),
           fullName: 'DiwaPAY User',
           countryCode: normalized.countryCode,
+          phoneNumber: `${normalized.countryCode} ${normalized.phone}`,
           maskedPhone: maskPhoneNumber(normalized.countryCode, normalized.phone),
           passwordHash: hashPassword(password),
           verified: true,
@@ -409,6 +420,7 @@ export function createApiRouter() {
       return;
     }
 
+    user.phoneNumber = user.phoneNumber || `${normalized.countryCode} ${normalized.phone}`;
     user.lastSignedInAt = new Date().toISOString();
     user.updatedAt = user.lastSignedInAt;
     store.users[normalized.key] = user;
@@ -522,7 +534,7 @@ export function createApiRouter() {
   router.get('/admin/accounts', requireRole('admin'), (_req: Request, res: Response) => {
     const store = readStore();
     const accounts = Object.values(store.users)
-      .map(toSafeUser)
+      .map(toAdminUser)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
     res.json({

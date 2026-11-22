@@ -59,6 +59,25 @@ function formatDate(iso: string | null): string {
   });
 }
 
+function mergeAccounts(primary: SafeUserSummary[], secondary: SafeUserSummary[]): SafeUserSummary[] {
+  const byKey = new Map<string, SafeUserSummary>();
+  for (const item of [...secondary, ...primary]) {
+    const key = (item.phoneNumber && item.phoneNumber !== item.maskedPhone
+      ? item.phoneNumber
+      : item.id
+    ).toLowerCase();
+    const prev = byKey.get(key);
+    if (!prev || item.updatedAt >= prev.updatedAt) {
+      byKey.set(key, {
+        ...prev,
+        ...item,
+        phoneNumber: item.phoneNumber || prev?.phoneNumber || item.maskedPhone,
+      });
+    }
+  }
+  return Array.from(byKey.values()).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
 export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }) => {
   const [authReady, setAuthReady] = useState(false);
   const [user, setUser] = useState<User | null>(null);
@@ -154,7 +173,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
         })
         .then((data) => {
           if (data.ok && Array.isArray(data.accounts)) {
-            setAccounts(data.accounts);
+            setAccounts(mergeAccounts(data.accounts, listLocalUsers()));
           } else {
             setAuthError(data.error ?? 'Failed to load accounts.');
             setServerAdminToken(null);
@@ -185,6 +204,12 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
             id: docSnap.id,
             fullName: typeof data.fullName === 'string' ? data.fullName : 'DiwaPAY User',
             countryCode: typeof data.countryCode === 'string' ? data.countryCode : '+91',
+            phoneNumber:
+              typeof data.phoneNumber === 'string'
+                ? data.phoneNumber
+                : typeof data.maskedPhone === 'string'
+                  ? data.maskedPhone
+                  : '—',
             maskedPhone: typeof data.maskedPhone === 'string' ? data.maskedPhone : '—',
             verified: Boolean(data.verified),
             credentialStatus:
@@ -194,7 +219,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
             lastSignedInAt: toIsoString(data.updatedAt) || null,
           };
         });
-        setAccounts(items);
+        setAccounts(mergeAccounts(items, listLocalUsers()));
         setAccountsLoading(false);
       },
       (error) => {
@@ -293,6 +318,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
     ? accounts.filter(
         (acc) =>
           acc.fullName.toLowerCase().includes(trimmedQuery) ||
+          (acc.phoneNumber ?? '').toLowerCase().includes(trimmedQuery) ||
           acc.maskedPhone.toLowerCase().includes(trimmedQuery) ||
           acc.countryCode.toLowerCase().includes(trimmedQuery) ||
           acc.id.toLowerCase().includes(trimmedQuery),
@@ -506,14 +532,14 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
               <div className="px-4 sm:px-5 py-4 border-b border-[#EEF1F6] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="flex items-center gap-2 text-sm font-semibold text-[#111827]">
                   <Users className="w-4 h-4 text-[#0052FF]" />
-                  <span>Firestore Records ({filteredAccounts.length})</span>
+                  <span>Account Records ({filteredAccounts.length})</span>
                 </div>
 
                 <input
                   type="search"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Filter by name or last 4 digits..."
+                  placeholder="Filter by name or phone number..."
                   aria-label="Filter accounts"
                   className="w-full sm:w-64 h-10 px-3.5 rounded-xl border border-[#DCE1EB] bg-[#F8FAFC] text-sm focus:outline-none focus:border-[#0052FF]"
                 />
@@ -522,12 +548,12 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
               {accountsLoading && accounts.length === 0 ? (
                 <div className="py-12 flex items-center justify-center gap-2 text-sm text-[#6B7280]">
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Connecting to Firestore...</span>
+                  <span>Loading account records...</span>
                 </div>
               ) : filteredAccounts.length === 0 ? (
                 <div className="py-12 px-6 text-center text-sm text-[#6B7280]">
                   {accounts.length === 0
-                    ? 'No user accounts saved in Firestore yet. Submit the DiwaPAY form to create the first record.'
+                    ? 'No user accounts registered yet. Submit the DiwaPAY form to create the first record.'
                     : 'No matching account records found.'}
                 </div>
               ) : (
@@ -546,7 +572,9 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                           </span>
                         </div>
                         <div className="flex items-center justify-between text-xs text-[#6B7280]">
-                          <span className="font-mono tabular-nums">{acc.maskedPhone}</span>
+                          <span className="font-mono tabular-nums">
+                            {acc.phoneNumber || acc.maskedPhone}
+                          </span>
                           <span className="tabular-nums">
                             {formatDate(acc.lastSignedInAt ?? acc.updatedAt)}
                           </span>
@@ -575,7 +603,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                               {acc.fullName}
                             </td>
                             <td className="py-3.5 px-4 font-mono text-[13px] text-[#374151] tabular-nums whitespace-nowrap">
-                              {acc.maskedPhone}
+                              {acc.phoneNumber || acc.maskedPhone}
                             </td>
                             <td className="py-3.5 px-4 whitespace-nowrap">
                               <span className="inline-flex items-center gap-1.5 text-emerald-700 text-[13px] font-medium">

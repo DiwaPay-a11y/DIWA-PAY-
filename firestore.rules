@@ -49,6 +49,7 @@ service cloud.firestore {
         'ownerUid',
         'fullName',
         'countryCode',
+        'phoneNumber',
         'maskedPhone',
         'verified',
         'credentialStatus',
@@ -64,6 +65,7 @@ service cloud.firestore {
       && data.fullName.size() <= 80
       && data.countryCode is string
       && data.countryCode in ['+91', '+1', '+44', '+971', '+65']
+      && (!('phoneNumber' in data) || (data.phoneNumber is string && data.phoneNumber.size() >= 10 && data.phoneNumber.size() <= 24))
       && data.maskedPhone is string
       && data.maskedPhone.size() >= 6
       && data.maskedPhone.size() <= 24
@@ -95,6 +97,7 @@ service cloud.firestore {
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'fullName',
               'countryCode',
+              'phoneNumber',
               'maskedPhone',
               'verified',
               'updatedAt'

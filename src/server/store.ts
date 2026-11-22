@@ -5,6 +5,7 @@ export interface StoredUser {
   id: string;
   fullName: string;
   countryCode: string;
+  phoneNumber?: string;
   maskedPhone: string;
   passwordHash: string;
   verified: boolean;

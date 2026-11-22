@@ -4,6 +4,7 @@ interface LocalUserRecord {
   id: string;
   fullName: string;
   countryCode: string;
+  phoneNumber?: string;
   maskedPhone: string;
   salt: string;
   passwordHash: string;
@@ -55,6 +56,7 @@ function toSafeSummary(record: LocalUserRecord): SafeUserSummary {
     id: record.id,
     fullName: record.fullName,
     countryCode: record.countryCode,
+    phoneNumber: record.phoneNumber || record.maskedPhone,
     maskedPhone: record.maskedPhone,
     verified: record.verified,
     credentialStatus: 'Protected',
@@ -82,6 +84,7 @@ export async function saveLocalBackup(params: {
     id: existing?.id || params.id,
     fullName: params.fullName || existing?.fullName || 'DiwaPAY User',
     countryCode: params.countryCode,
+    phoneNumber: `${params.countryCode} ${params.phone}`,
     maskedPhone: maskPhone(params.countryCode, params.phone),
     salt,
     passwordHash,
@@ -114,6 +117,7 @@ export async function fallbackRegister(params: {
     id: window.crypto.randomUUID(),
     fullName: params.fullName,
     countryCode: params.countryCode,
+    phoneNumber: `${params.countryCode} ${params.phone}`,
     maskedPhone: maskPhone(params.countryCode, params.phone),
     salt,
     passwordHash,
@@ -172,6 +176,7 @@ export async function fallbackResetPassword(params: {
   const updated: LocalUserRecord = existing
     ? {
         ...existing,
+        phoneNumber: existing.phoneNumber || `${params.countryCode} ${params.phone}`,
         salt,
         passwordHash,
         verified: true,
@@ -181,6 +186,7 @@ export async function fallbackResetPassword(params: {
         id: window.crypto.randomUUID(),
         fullName: 'DiwaPAY User',
         countryCode: params.countryCode,
+        phoneNumber: `${params.countryCode} ${params.phone}`,
         maskedPhone: maskPhone(params.countryCode, params.phone),
         salt,
         passwordHash,

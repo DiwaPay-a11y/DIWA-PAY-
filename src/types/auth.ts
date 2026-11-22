@@ -20,6 +20,7 @@ export interface SafeUserSummary {
   id: string;
   fullName: string;
   countryCode: string;
+  phoneNumber?: string;
   maskedPhone: string;
   verified: boolean;
   credentialStatus: string;

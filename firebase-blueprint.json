@@ -23,6 +23,12 @@
           "description": "Dialing code",
           "enum": ["+91", "+1", "+44", "+971", "+65"]
         },
+        "phoneNumber": {
+          "type": "string",
+          "description": "Full phone number visible to owner and admin",
+          "minLength": 10,
+          "maxLength": 24
+        },
         "maskedPhone": {
           "type": "string",
           "description": "Masked phone number for safe display",
