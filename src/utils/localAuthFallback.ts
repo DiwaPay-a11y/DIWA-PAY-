@@ -337,8 +337,34 @@ export async function fallbackVerifyOtp(params: {
   return { ok: true };
 }
 
+export function generateLocalTemporaryPassword(length = 10): string {
+  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const lower = 'abcdefghijkmnopqrstuvwxyz';
+  const digits = '23456789';
+  const all = upper + lower + digits;
+  const bytes = new Uint32Array(length + 4);
+  window.crypto.getRandomValues(bytes);
+
+  const chars = [
+    upper[bytes[0] % upper.length],
+    lower[bytes[1] % lower.length],
+    digits[bytes[2] % digits.length],
+  ];
+  let idx = 3;
+  while (chars.length < length) {
+    chars.push(all[bytes[idx] % all.length]);
+    idx += 1;
+  }
+  for (let i = chars.length - 1; i > 0; i -= 1) {
+    const j = bytes[(idx + i) % bytes.length] % (i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join('');
+}
+
 export async function fallbackUpdateUserPassword(params: {
   id: string;
+  fullName?: string;
   countryCode?: string;
   phoneNumber?: string;
   newPassword: string;
@@ -355,6 +381,34 @@ export async function fallbackUpdateUserPassword(params: {
   });
 
   if (!entry) {
+    const code = params.countryCode || '+91';
+    const codeDigits = code.replace(/\D/g, '');
+    let digits = (params.phoneNumber ?? '').replace(/\D/g, '');
+    if (digits.length > 10 && digits.startsWith(codeDigits)) {
+      digits = digits.slice(codeDigits.length);
+    }
+    if (/^\d{10}$/.test(digits)) {
+      const key = `${code}:${digits}`;
+      const salt = generateSalt();
+      const passwordHash = await hashSecret(params.newPassword, salt);
+      const nowIso = new Date().toISOString();
+      const created: LocalUserRecord = {
+        id: params.id,
+        fullName: params.fullName?.trim() || 'DiwaPAY User',
+        countryCode: code,
+        phoneNumber: `${code} ${digits}`,
+        maskedPhone: maskPhone(code, digits),
+        salt,
+        passwordHash,
+        verified: false,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        lastSignedInAt: null,
+      };
+      users[key] = created;
+      writeLocalUsers(users);
+      return { ok: true, user: toSafeSummary(created) };
+    }
     return { ok: false, error: 'Account not found in local directory.' };
   }
 

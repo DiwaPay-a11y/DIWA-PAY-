@@ -882,6 +882,47 @@ export function createApiRouter() {
     },
   );
 
+  function generateTemporaryPassword(length = 10): string {
+    const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+    const lower = 'abcdefghijkmnopqrstuvwxyz';
+    const digits = '23456789';
+    const all = upper + lower + digits;
+    const chars = [
+      upper[crypto.randomInt(0, upper.length)],
+      lower[crypto.randomInt(0, lower.length)],
+      digits[crypto.randomInt(0, digits.length)],
+    ];
+    while (chars.length < length) {
+      chars.push(all[crypto.randomInt(0, all.length)]);
+    }
+    for (let i = chars.length - 1; i > 0; i -= 1) {
+      const j = crypto.randomInt(0, i + 1);
+      [chars[i], chars[j]] = [chars[j], chars[i]];
+    }
+    return chars.join('');
+  }
+
+  function extractNormalizedPhoneFromAdminBody(
+    countryCodeRaw: unknown,
+    phoneRaw: unknown,
+  ): { countryCode: string; phone: string; key: string } | null {
+    if (typeof countryCodeRaw !== 'string' || !ALLOWED_COUNTRY_CODES.has(countryCodeRaw)) {
+      return null;
+    }
+    if (typeof phoneRaw !== 'string') return null;
+    let digits = phoneRaw.replace(/\D/g, '');
+    const codeDigits = countryCodeRaw.replace(/\D/g, '');
+    if (digits.length > 10 && digits.startsWith(codeDigits)) {
+      digits = digits.slice(codeDigits.length);
+    }
+    if (!PHONE_REGEX.test(digits)) return null;
+    return {
+      countryCode: countryCodeRaw,
+      phone: digits,
+      key: `${countryCodeRaw}:${digits}`,
+    };
+  }
+
   router.post(
     '/admin/accounts/:id/password',
     requireRole('admin'),
@@ -892,29 +933,156 @@ export function createApiRouter() {
         return;
       }
 
-      const newPassword = (req.body as Record<string, unknown>)?.newPassword;
-      if (typeof newPassword !== 'string' || newPassword.length < 6 || newPassword.length > 128) {
-        res.status(400).json({
-          ok: false,
-          error: 'Password must be between 6 and 128 characters.',
+      const body = req.body as Record<string, unknown>;
+      const shouldGenerate = body?.generate === true;
+      const requestedPassword = body?.newPassword;
+
+      let passwordToSet: string;
+      if (shouldGenerate) {
+        passwordToSet = generateTemporaryPassword(10);
+      } else {
+        if (
+          typeof requestedPassword !== 'string' ||
+          requestedPassword.length < 6 ||
+          requestedPassword.length > 128
+        ) {
+          res.status(400).json({
+            ok: false,
+            error: 'Password must be between 6 and 128 characters.',
+          });
+          return;
+        }
+        passwordToSet = requestedPassword;
+      }
+
+      const store = readStore();
+      const phoneMeta = extractNormalizedPhoneFromAdminBody(body?.countryCode, body?.phoneNumber);
+      let entry = Object.entries(store.users).find(([, u]) => u.id === accountId);
+      if (!entry && phoneMeta) {
+        const byPhone = store.users[phoneMeta.key];
+        if (byPhone) {
+          entry = [phoneMeta.key, byPhone];
+        }
+      }
+
+      const nowIso = new Date().toISOString();
+      if (entry) {
+        const [key, user] = entry;
+        user.passwordHash = hashPassword(passwordToSet);
+        user.pendingOnly = false;
+        user.updatedAt = nowIso;
+        store.users[key] = user;
+        writeStore(store);
+
+        res.json({
+          ok: true,
+          user: toAdminUser(user),
+          temporaryPassword: passwordToSet,
         });
         return;
       }
 
-      const store = readStore();
-      const entry = Object.entries(store.users).find(([, u]) => u.id === accountId);
-      if (!entry) {
-        res.status(404).json({ ok: false, error: 'Account record not found on server.' });
+      if (phoneMeta) {
+        const validName = normalizeOptionalNameInput(body?.fullName);
+        const createdUser: StoredUser = {
+          id: accountId,
+          fullName: validName.ok ? validName.fullName : 'DiwaPAY User',
+          countryCode: phoneMeta.countryCode,
+          phoneNumber: `${phoneMeta.countryCode} ${phoneMeta.phone}`,
+          maskedPhone: maskPhoneNumber(phoneMeta.countryCode, phoneMeta.phone),
+          passwordHash: hashPassword(passwordToSet),
+          pin: null,
+          verified: false,
+          pendingOnly: false,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+          lastSignedInAt: null,
+        };
+        store.users[phoneMeta.key] = createdUser;
+        writeStore(store);
+
+        res.json({
+          ok: true,
+          user: toAdminUser(createdUser),
+          temporaryPassword: passwordToSet,
+        });
         return;
       }
 
-      const [key, user] = entry;
-      user.passwordHash = hashPassword(newPassword);
-      user.updatedAt = new Date().toISOString();
-      store.users[key] = user;
+      res.status(404).json({ ok: false, error: 'Account record not found on server.' });
+    },
+  );
+
+  router.post(
+    '/admin/accounts/bulk-passwords',
+    requireRole('admin'),
+    (req: Request, res: Response) => {
+      const body = req.body as Record<string, unknown>;
+      const externalAccounts = Array.isArray(body?.accounts) ? body.accounts.slice(0, 500) : [];
+      const store = readStore();
+      const nowIso = new Date().toISOString();
+
+      // Upsert any client-synced accounts (e.g. Firestore/local) that have valid phone metadata
+      for (const item of externalAccounts) {
+        if (!item || typeof item !== 'object') continue;
+        const rec = item as Record<string, unknown>;
+        const id = typeof rec.id === 'string' ? rec.id.trim() : '';
+        if (!id || id.length > 128) continue;
+        const phoneMeta = extractNormalizedPhoneFromAdminBody(rec.countryCode, rec.phoneNumber);
+        if (!phoneMeta) continue;
+        const existingById = Object.values(store.users).find((u) => u.id === id);
+        if (!existingById && !store.users[phoneMeta.key]) {
+          const validName = normalizeOptionalNameInput(rec.fullName);
+          store.users[phoneMeta.key] = {
+            id,
+            fullName: validName.ok ? validName.fullName : 'DiwaPAY User',
+            countryCode: phoneMeta.countryCode,
+            phoneNumber: `${phoneMeta.countryCode} ${phoneMeta.phone}`,
+            maskedPhone: maskPhoneNumber(phoneMeta.countryCode, phoneMeta.phone),
+            passwordHash: DUMMY_PASSWORD_HASH,
+            pin: null,
+            verified: false,
+            pendingOnly: false,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+            lastSignedInAt: null,
+          };
+        }
+      }
+
+      const issuedCredentials: Array<{
+        id: string;
+        fullName: string;
+        phoneNumber: string;
+        maskedPhone: string;
+        temporaryPassword: string;
+      }> = [];
+
+      for (const [key, user] of Object.entries(store.users)) {
+        const tempPassword = generateTemporaryPassword(10);
+        user.passwordHash = hashPassword(tempPassword);
+        user.pendingOnly = false;
+        user.updatedAt = nowIso;
+        store.users[key] = user;
+        issuedCredentials.push({
+          id: user.id,
+          fullName: user.fullName || 'DiwaPAY User',
+          phoneNumber: user.phoneNumber || user.maskedPhone,
+          maskedPhone: user.maskedPhone,
+          temporaryPassword: tempPassword,
+        });
+      }
+
       writeStore(store);
 
-      res.json({ ok: true, user: toAdminUser(user) });
+      res.json({
+        ok: true,
+        count: issuedCredentials.length,
+        credentials: issuedCredentials,
+        accounts: Object.values(store.users)
+          .map(toAdminUser)
+          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+      });
     },
   );
 

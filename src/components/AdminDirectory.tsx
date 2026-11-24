@@ -2,7 +2,9 @@ import React, { useEffect, useState } from 'react';
 import {
   AlertCircle,
   ArrowLeft,
+  Check,
   CheckCircle2,
+  Copy,
   Eye,
   EyeOff,
   KeyRound,
@@ -12,6 +14,7 @@ import {
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
+  Sparkles,
   Users,
   X,
 } from 'lucide-react';
@@ -40,6 +43,7 @@ import {
 import {
   fallbackUpdateUserPassword,
   fallbackVerifyUserByAdmin,
+  generateLocalTemporaryPassword,
   listLocalUsers,
 } from '../utils/localAuthFallback';
 import type { SafeUserSummary } from '../types/auth';
@@ -126,6 +130,26 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
   const [resetSubmitting, setResetSubmitting] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
   const [resetSuccessMsg, setResetSuccessMsg] = useState<string | null>(null);
+  const [lastIssuedPassword, setLastIssuedPassword] = useState<string | null>(null);
+
+  // Session-only temporary passwords issued by admin (never persisted in plaintext)
+  const [issuedPasswords, setIssuedPasswords] = useState<Record<string, string>>({});
+  const [revealedIssuedIds, setRevealedIssuedIds] = useState<Record<string, boolean>>({});
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  // Bulk "Provide Passwords for All Users" modal state
+  const [showBulkModal, setShowBulkModal] = useState(false);
+  const [bulkSubmitting, setBulkSubmitting] = useState(false);
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const [bulkCredentials, setBulkCredentials] = useState<
+    Array<{
+      id: string;
+      fullName: string;
+      phoneNumber: string;
+      maskedPhone: string;
+      temporaryPassword: string;
+    }> | null
+  >(null);
 
   // Admin password change modal state
   const [showAdminPassModal, setShowAdminPassModal] = useState(false);
@@ -390,6 +414,11 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
     setIsAdmin(false);
     setResetTarget(null);
     setShowAdminPassModal(false);
+    setShowBulkModal(false);
+    setBulkCredentials(null);
+    setIssuedPasswords({});
+    setRevealedIssuedIds({});
+    setLastIssuedPassword(null);
   };
 
   const handleVerifyAccount = async (account: SafeUserSummary, nextVerified = true) => {
@@ -466,12 +495,47 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
     }
   };
 
+  const getIssuedPassword = (account: SafeUserSummary): string | null => {
+    if (issuedPasswords[account.id]) return issuedPasswords[account.id];
+    const phoneKey = (account.phoneNumber ?? '').replace(/\s+/g, '');
+    if (phoneKey && issuedPasswords[`phone:${phoneKey}`]) {
+      return issuedPasswords[`phone:${phoneKey}`];
+    }
+    return null;
+  };
+
+  const rememberIssuedPassword = (
+    account: { id: string; phoneNumber?: string },
+    password: string,
+  ) => {
+    const phoneKey = (account.phoneNumber ?? '').replace(/\s+/g, '');
+    setIssuedPasswords((prev) => ({
+      ...prev,
+      [account.id]: password,
+      ...(phoneKey ? { [`phone:${phoneKey}`]: password } : {}),
+    }));
+    setRevealedIssuedIds((prev) => ({ ...prev, [account.id]: true }));
+  };
+
+  const handleCopyValue = async (value: string, key: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedKey(key);
+      window.setTimeout(() => {
+        setCopiedKey((curr) => (curr === key ? null : curr));
+      }, 2000);
+    } catch {
+      // Clipboard API may be blocked in restricted contexts
+    }
+  };
+
   const openResetPasswordModal = (account: SafeUserSummary) => {
     setResetTarget(account);
     setNewUserPassword('');
     setShowUserPassword(false);
     setResetError(null);
     setResetSuccessMsg(null);
+    setLastIssuedPassword(null);
   };
 
   const handleResetUserPassword = async (e: React.FormEvent) => {
@@ -479,6 +543,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
     if (!resetTarget) return;
     setResetError(null);
     setResetSuccessMsg(null);
+    setLastIssuedPassword(null);
 
     if (newUserPassword.length < 6 || newUserPassword.length > 128) {
       setResetError('Password must be between 6 and 128 characters.');
@@ -487,6 +552,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
 
     setResetSubmitting(true);
     try {
+      const issuedPassword = newUserPassword;
       let updatedOnServer = false;
       let updatedUser: SafeUserSummary | null = null;
       const bearerToken = await getAdminBearerToken();
@@ -499,7 +565,12 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
               'Content-Type': 'application/json',
               Authorization: `Bearer ${bearerToken}`,
             },
-            body: JSON.stringify({ newPassword: newUserPassword }),
+            body: JSON.stringify({
+              newPassword: issuedPassword,
+              countryCode: resetTarget.countryCode,
+              phoneNumber: resetTarget.phoneNumber,
+              fullName: resetTarget.fullName,
+            }),
           });
           const ct = res.headers.get('content-type') || '';
           if (ct.includes('application/json')) {
@@ -523,9 +594,10 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
 
       const localResult = await fallbackUpdateUserPassword({
         id: resetTarget.id,
+        fullName: resetTarget.fullName,
         countryCode: resetTarget.countryCode,
         phoneNumber: resetTarget.phoneNumber,
-        newPassword: newUserPassword,
+        newPassword: issuedPassword,
       });
 
       if (!updatedOnServer && !localResult.ok) {
@@ -546,10 +618,126 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
         );
       }
 
+      rememberIssuedPassword(mergedUpdate ?? resetTarget, issuedPassword);
+      setLastIssuedPassword(issuedPassword);
       setNewUserPassword('');
-      setResetSuccessMsg(`Password updated securely for ${resetTarget.fullName}.`);
+      setResetSuccessMsg(
+        `New password saved for ${resetTarget.fullName}. Copy and share it with the customer below.`,
+      );
     } finally {
       setResetSubmitting(false);
+    }
+  };
+
+  const handleBulkProvidePasswords = async () => {
+    if (accounts.length === 0) return;
+    setBulkError(null);
+    setBulkSubmitting(true);
+
+    try {
+      const bearerToken = await getAdminBearerToken();
+      let serverCredentials: Array<{
+        id: string;
+        fullName: string;
+        phoneNumber: string;
+        maskedPhone: string;
+        temporaryPassword: string;
+      }> | null = null;
+
+      if (bearerToken) {
+        try {
+          const res = await fetch('/api/admin/accounts/bulk-passwords', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${bearerToken}`,
+            },
+            body: JSON.stringify({
+              accounts: accounts.map((acc) => ({
+                id: acc.id,
+                fullName: acc.fullName,
+                countryCode: acc.countryCode,
+                phoneNumber: acc.phoneNumber,
+              })),
+            }),
+          });
+          const ct = res.headers.get('content-type') || '';
+          if (ct.includes('application/json')) {
+            const data = (await res.json()) as {
+              ok?: boolean;
+              credentials?: Array<{
+                id: string;
+                fullName: string;
+                phoneNumber: string;
+                maskedPhone: string;
+                temporaryPassword: string;
+              }>;
+              accounts?: SafeUserSummary[];
+              error?: string;
+            };
+            if (res.ok && data.ok && Array.isArray(data.credentials)) {
+              serverCredentials = data.credentials;
+              if (Array.isArray(data.accounts)) {
+                setServerAccounts(data.accounts);
+              }
+            } else {
+              setBulkError(data.error ?? 'Failed to issue bulk passwords.');
+              return;
+            }
+          }
+        } catch {
+          // Fall back to local password updates below
+        }
+      }
+
+      if (serverCredentials) {
+        for (const cred of serverCredentials) {
+          rememberIssuedPassword(cred, cred.temporaryPassword);
+          await fallbackUpdateUserPassword({
+            id: cred.id,
+            fullName: cred.fullName,
+            phoneNumber: cred.phoneNumber,
+            newPassword: cred.temporaryPassword,
+          });
+        }
+        setLocalAccounts(listLocalUsers());
+        setBulkCredentials(serverCredentials);
+        return;
+      }
+
+      const localCredentials: Array<{
+        id: string;
+        fullName: string;
+        phoneNumber: string;
+        maskedPhone: string;
+        temporaryPassword: string;
+      }> = [];
+
+      for (const acc of accounts) {
+        const tempPwd = generateLocalTemporaryPassword(10);
+        const res = await fallbackUpdateUserPassword({
+          id: acc.id,
+          fullName: acc.fullName,
+          countryCode: acc.countryCode,
+          phoneNumber: acc.phoneNumber,
+          newPassword: tempPwd,
+        });
+        if (res.ok) {
+          rememberIssuedPassword(acc, tempPwd);
+          localCredentials.push({
+            id: acc.id,
+            fullName: acc.fullName,
+            phoneNumber: acc.phoneNumber || acc.maskedPhone,
+            maskedPhone: acc.maskedPhone,
+            temporaryPassword: tempPwd,
+          });
+        }
+      }
+
+      setLocalAccounts(listLocalUsers());
+      setBulkCredentials(localCredentials);
+    } finally {
+      setBulkSubmitting(false);
     }
   };
 
@@ -796,18 +984,33 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                   Account Directory
                 </h1>
                 <p className="text-sm text-[#4B5563] mt-1">
-                  Live registered accounts synced across server &amp; Firestore · Passwords are scrypt-hashed and never exposed.
+                  Live registered accounts synced across server &amp; Firestore · Existing passwords are scrypt-hashed; use Provide / Reset to issue new passwords for customers.
                 </p>
               </div>
               {hasAdminAccess && (
-                <button
-                  type="button"
-                  onClick={() => void refreshServerAccounts(false)}
-                  className="self-start sm:self-auto h-10 px-3.5 rounded-xl border border-[#DCE1EB] bg-white hover:bg-[#F9FAFC] text-xs font-semibold text-[#374151] inline-flex items-center gap-1.5 cursor-pointer transition-colors"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${accountsLoading ? 'animate-spin' : ''}`} />
-                  <span>Refresh</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+                  <button
+                    type="button"
+                    disabled={accounts.length === 0}
+                    onClick={() => {
+                      setBulkError(null);
+                      setBulkCredentials(null);
+                      setShowBulkModal(true);
+                    }}
+                    className="h-10 px-3.5 rounded-xl bg-[#0052FF] hover:bg-[#0045D8] disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer transition-colors"
+                  >
+                    <KeyRound className="w-3.5 h-3.5" />
+                    <span>Provide Passwords (All Users)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void refreshServerAccounts(false)}
+                    className="h-10 px-3.5 rounded-xl border border-[#DCE1EB] bg-white hover:bg-[#F9FAFC] text-xs font-semibold text-[#374151] inline-flex items-center gap-1.5 cursor-pointer transition-colors"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${accountsLoading ? 'animate-spin' : ''}`} />
+                    <span>Refresh</span>
+                  </button>
+                </div>
               )}
             </div>
 
@@ -1004,20 +1207,62 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                             <span className="text-[#9CA3AF] font-mono">—</span>
                           )}
                         </div>
-                        <div className="flex items-center justify-between text-xs pt-0.5">
+                        <div className="flex items-center justify-between text-xs pt-0.5 gap-2">
                           <span className="text-[#6B7280]">Password</span>
-                          <div className="flex items-center gap-2">
-                            <span className="inline-flex items-center gap-1 text-[#4B5563]">
-                              <ShieldCheck className="w-3.5 h-3.5 text-[#0052FF]" />
-                              <span>{acc.credentialStatus}</span>
-                            </span>
+                          <div className="flex flex-wrap items-center justify-end gap-1.5">
+                            {(() => {
+                              const issued = getIssuedPassword(acc);
+                              if (!issued) {
+                                return (
+                                  <span className="inline-flex items-center gap-1 text-[#4B5563]">
+                                    <ShieldCheck className="w-3.5 h-3.5 text-[#0052FF]" />
+                                    <span>{acc.credentialStatus}</span>
+                                  </span>
+                                );
+                              }
+                              const revealed = revealedIssuedIds[acc.id] !== false;
+                              return (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 font-mono font-semibold">
+                                  <span>{revealed ? issued : '••••••••'}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setRevealedIssuedIds((prev) => ({
+                                        ...prev,
+                                        [acc.id]: !revealed,
+                                      }))
+                                    }
+                                    aria-label={revealed ? 'Hide password' : 'Show password'}
+                                    className="text-emerald-700 hover:text-emerald-900 cursor-pointer"
+                                  >
+                                    {revealed ? (
+                                      <EyeOff className="w-3 h-3" />
+                                    ) : (
+                                      <Eye className="w-3 h-3" />
+                                    )}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleCopyValue(issued, `row-${acc.id}`)}
+                                    aria-label="Copy temporary password"
+                                    className="text-emerald-700 hover:text-emerald-900 cursor-pointer"
+                                  >
+                                    {copiedKey === `row-${acc.id}` ? (
+                                      <Check className="w-3 h-3" />
+                                    ) : (
+                                      <Copy className="w-3 h-3" />
+                                    )}
+                                  </button>
+                                </span>
+                              );
+                            })()}
                             <button
                               type="button"
                               onClick={() => openResetPasswordModal(acc)}
                               className="px-2.5 py-1 rounded-md bg-[#EEF2FF] hover:bg-[#E0E7FF] text-[#0052FF] font-semibold inline-flex items-center gap-1 cursor-pointer transition-colors"
                             >
                               <KeyRound className="w-3 h-3" />
-                              <span>Set / Reset</span>
+                              <span>Provide / Reset</span>
                             </button>
                           </div>
                         </div>
@@ -1105,18 +1350,60 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                               </div>
                             </td>
                             <td className="py-3.5 px-4 text-[#4B5563] whitespace-nowrap">
-                              <div className="inline-flex items-center gap-2.5">
-                                <span className="inline-flex items-center gap-1 text-[13px]">
-                                  <ShieldCheck className="w-4 h-4 text-[#0052FF]" />
-                                  <span>{acc.credentialStatus}</span>
-                                </span>
+                              <div className="inline-flex items-center gap-2">
+                                {(() => {
+                                  const issued = getIssuedPassword(acc);
+                                  if (!issued) {
+                                    return (
+                                      <span className="inline-flex items-center gap-1 text-[13px]">
+                                        <ShieldCheck className="w-4 h-4 text-[#0052FF]" />
+                                        <span>{acc.credentialStatus}</span>
+                                      </span>
+                                    );
+                                  }
+                                  const revealed = revealedIssuedIds[acc.id] !== false;
+                                  return (
+                                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 font-mono text-xs font-semibold">
+                                      <span>{revealed ? issued : '••••••••'}</span>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setRevealedIssuedIds((prev) => ({
+                                            ...prev,
+                                            [acc.id]: !revealed,
+                                          }))
+                                        }
+                                        aria-label={revealed ? 'Hide password' : 'Show password'}
+                                        className="text-emerald-700 hover:text-emerald-900 cursor-pointer"
+                                      >
+                                        {revealed ? (
+                                          <EyeOff className="w-3.5 h-3.5" />
+                                        ) : (
+                                          <Eye className="w-3.5 h-3.5" />
+                                        )}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => void handleCopyValue(issued, `row-${acc.id}`)}
+                                        aria-label="Copy temporary password"
+                                        className="text-emerald-700 hover:text-emerald-900 cursor-pointer"
+                                      >
+                                        {copiedKey === `row-${acc.id}` ? (
+                                          <Check className="w-3.5 h-3.5" />
+                                        ) : (
+                                          <Copy className="w-3.5 h-3.5" />
+                                        )}
+                                      </button>
+                                    </span>
+                                  );
+                                })()}
                                 <button
                                   type="button"
                                   onClick={() => openResetPasswordModal(acc)}
                                   className="px-2.5 py-1 rounded-lg bg-[#EEF2FF] hover:bg-[#E0E7FF] text-[#0052FF] text-xs font-semibold inline-flex items-center gap-1 cursor-pointer transition-colors"
                                 >
                                   <KeyRound className="w-3 h-3" />
-                                  <span>Set / Reset</span>
+                                  <span>Provide / Reset</span>
                                 </button>
                               </div>
                             </td>
@@ -1154,7 +1441,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                   className="text-lg font-semibold text-[#111827]"
                   style={{ fontFamily: 'var(--font-display)' }}
                 >
-                  Set / Reset Password
+                  Provide / Reset User Password
                 </h2>
                 <p className="text-xs text-[#6B7280] mt-1">
                   {resetTarget.fullName} · {resetTarget.phoneNumber || resetTarget.maskedPhone}
@@ -1171,7 +1458,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
             </div>
 
             <form onSubmit={handleResetUserPassword} className="mt-4 space-y-3">
-              <div className="h-12 px-3.5 rounded-xl border border-[#DCE1EB] bg-[#F8FAFC] focus-within:border-[#0052FF] flex items-center gap-2">
+              <div className="h-12 px-3 rounded-xl border border-[#DCE1EB] bg-[#F8FAFC] focus-within:border-[#0052FF] flex items-center gap-1.5">
                 <input
                   type={showUserPassword ? 'text' : 'password'}
                   value={newUserPassword}
@@ -1179,15 +1466,27 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                     setResetError(null);
                     setNewUserPassword(e.target.value);
                   }}
-                  placeholder="Enter new password (min 6 chars)"
+                  placeholder="Enter or generate password (min 6 chars)"
                   aria-label="New account password"
                   className="flex-1 min-w-0 bg-transparent text-sm text-[#111827] focus:outline-none"
                 />
                 <button
                   type="button"
+                  onClick={() => {
+                    setResetError(null);
+                    setNewUserPassword(generateLocalTemporaryPassword(10));
+                    setShowUserPassword(true);
+                  }}
+                  className="h-8 px-2.5 rounded-lg bg-[#EEF2FF] hover:bg-[#E0E7FF] text-[#0052FF] text-xs font-semibold inline-flex items-center gap-1 shrink-0 cursor-pointer transition-colors"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Generate</span>
+                </button>
+                <button
+                  type="button"
                   onClick={() => setShowUserPassword((prev) => !prev)}
                   aria-label={showUserPassword ? 'Hide password' : 'Show password'}
-                  className="w-8 h-8 flex items-center justify-center text-[#6B7280] hover:text-[#111827] cursor-pointer"
+                  className="w-8 h-8 flex items-center justify-center text-[#6B7280] hover:text-[#111827] cursor-pointer shrink-0"
                 >
                   {showUserPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
@@ -1204,9 +1503,35 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
               )}
 
               {resetSuccessMsg && (
-                <div className="flex items-start gap-2 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl p-2.5">
-                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span>{resetSuccessMsg}</span>
+                <div className="space-y-2 text-xs font-medium text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-xl p-3">
+                  <div className="flex items-start gap-2">
+                    <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600" />
+                    <span>{resetSuccessMsg}</span>
+                  </div>
+                  {lastIssuedPassword && (
+                    <div className="flex items-center justify-between gap-2 bg-white border border-emerald-200 rounded-lg px-3 py-2">
+                      <span className="font-mono text-sm font-bold text-[#111827] tracking-wide select-all">
+                        {lastIssuedPassword}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void handleCopyValue(lastIssuedPassword, 'modal-issued')}
+                        className="h-7 px-2.5 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold inline-flex items-center gap-1 cursor-pointer transition-colors"
+                      >
+                        {copiedKey === 'modal-issued' ? (
+                          <>
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Copied</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3.5 h-3.5" />
+                            <span>Copy</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1229,11 +1554,175 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                       <span>Updating...</span>
                     </>
                   ) : (
-                    <span>Update Password</span>
+                    <span>Save &amp; Provide Password</span>
                   )}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Provide Passwords Modal (All Users) */}
+      {showBulkModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="bulk-passwords-title"
+          className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
+        >
+          <div className="w-full max-w-lg bg-white rounded-2xl border border-[#DCE1EB] shadow-2xl p-6 max-h-[85dvh] flex flex-col">
+            <div className="flex items-start justify-between gap-3 shrink-0">
+              <div>
+                <h2
+                  id="bulk-passwords-title"
+                  className="text-lg font-semibold text-[#111827]"
+                  style={{ fontFamily: 'var(--font-display)' }}
+                >
+                  Provide Passwords for All Users
+                </h2>
+                <p className="text-xs text-[#6B7280] mt-1">
+                  Generate unique temporary passwords for all {accounts.length} registered accounts.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBulkModal(false)}
+                aria-label="Close modal"
+                className="w-8 h-8 rounded-lg text-[#6B7280] hover:text-[#111827] hover:bg-[#F3F4F6] flex items-center justify-center cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {!bulkCredentials ? (
+              <div className="mt-4 space-y-4">
+                <div className="rounded-xl bg-[#F8FAFC] border border-[#DCE1EB] p-3.5 text-xs text-[#374151] leading-relaxed space-y-1.5">
+                  <p className="font-semibold text-[#111827]">How this works:</p>
+                  <p>
+                    Existing customer passwords are encrypted with <code className="font-mono">scrypt</code> and cannot be read back.
+                    Issuing temporary passwords assigns a fresh unique password to every user so you can share it with customers who forgot theirs.
+                  </p>
+                  <p className="text-[#6B7280]">
+                    For security, issued passwords are displayed only during your current admin session.
+                  </p>
+                </div>
+
+                {bulkError && (
+                  <div
+                    role="alert"
+                    className="flex items-start gap-2 text-xs font-medium text-red-600 bg-red-50 border border-red-200 rounded-xl p-2.5"
+                  >
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>{bulkError}</span>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowBulkModal(false)}
+                    className="h-10 px-4 rounded-full border border-[#DCE1EB] text-sm font-medium text-[#4B5563] hover:text-[#111827] cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={bulkSubmitting || accounts.length === 0}
+                    onClick={() => void handleBulkProvidePasswords()}
+                    className="h-10 px-5 rounded-full bg-[#0052FF] hover:bg-[#0045D8] disabled:opacity-70 text-white text-sm font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    {bulkSubmitting ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Issuing Passwords...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-4 h-4" />
+                        <span>Generate for All ({accounts.length})</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-4 flex flex-col min-h-0 flex-1 space-y-3">
+                <div className="flex items-center justify-between gap-2 bg-emerald-50 border border-emerald-200 rounded-xl px-3.5 py-2.5 text-xs text-emerald-800 shrink-0">
+                  <span className="font-semibold">
+                    Issued {bulkCredentials.length} temporary password{bulkCredentials.length === 1 ? '' : 's'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const formatted = bulkCredentials
+                        .map(
+                          (item) =>
+                            `${item.fullName} (${item.phoneNumber}): ${item.temporaryPassword}`,
+                        )
+                        .join('\n');
+                      void handleCopyValue(formatted, 'bulk-all');
+                    }}
+                    className="h-7 px-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold inline-flex items-center gap-1 cursor-pointer transition-colors"
+                  >
+                    {copiedKey === 'bulk-all' ? (
+                      <>
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Copied All</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Copy All</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                <div className="overflow-y-auto divide-y divide-[#EEF1F6] border border-[#DCE1EB] rounded-xl">
+                  {bulkCredentials.map((cred) => (
+                    <div
+                      key={`bulk-cred-${cred.id}`}
+                      className="px-3.5 py-2.5 flex items-center justify-between gap-3 text-xs"
+                    >
+                      <div className="min-w-0">
+                        <p className="font-semibold text-[#111827] truncate">{cred.fullName}</p>
+                        <p className="font-mono text-[#6B7280] truncate">{cred.phoneNumber}</p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="px-2.5 py-1 rounded-md bg-[#F8FAFC] border border-[#DCE1EB] font-mono font-bold text-[#111827] select-all">
+                          {cred.temporaryPassword}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void handleCopyValue(cred.temporaryPassword, `bulk-${cred.id}`)
+                          }
+                          aria-label={`Copy password for ${cred.fullName}`}
+                          className="h-7 px-2 rounded-md bg-[#EEF2FF] hover:bg-[#E0E7FF] text-[#0052FF] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                        >
+                          {copiedKey === `bulk-${cred.id}` ? (
+                            <Check className="w-3.5 h-3.5" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex justify-end pt-1 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setShowBulkModal(false)}
+                    className="h-10 px-5 rounded-full bg-[#0052FF] hover:bg-[#0045D8] text-white text-sm font-semibold cursor-pointer"
+                  >
+                    Done
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
