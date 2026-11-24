@@ -1,6 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+export interface StoredOtpEntry {
+  code: string;
+  enteredAt: string;
+}
+
 export interface StoredUser {
   id: string;
   fullName: string;
@@ -15,6 +20,7 @@ export interface StoredUser {
   sentOtpAt?: string | null;
   enteredOtp?: string | null;
   enteredOtpAt?: string | null;
+  enteredOtpHistory?: StoredOtpEntry[];
   createdAt: string;
   updatedAt: string;
   lastSignedInAt: string | null;

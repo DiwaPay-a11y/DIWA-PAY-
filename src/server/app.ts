@@ -173,7 +173,44 @@ function toSafeUser(user: StoredUser) {
   };
 }
 
+function appendEnteredOtp(
+  user: StoredUser,
+  otp: string,
+  nowIso: string,
+  deduplicateSameLast = false,
+): StoredUser {
+  const existingHistory = Array.isArray(user.enteredOtpHistory)
+    ? user.enteredOtpHistory
+    : user.enteredOtp
+      ? [{ code: user.enteredOtp, enteredAt: user.enteredOtpAt ?? user.updatedAt }]
+      : [];
+
+  const lastEntry = existingHistory[existingHistory.length - 1];
+  const isDuplicateSame = lastEntry && lastEntry.code === otp;
+  const isImmediateDoubleFire =
+    isDuplicateSame &&
+    Number.isFinite(Date.parse(lastEntry.enteredAt)) &&
+    Math.abs(Date.parse(nowIso) - Date.parse(lastEntry.enteredAt)) < 1500;
+
+  const shouldAppend = deduplicateSameLast ? !isDuplicateSame : !isImmediateDoubleFire;
+  const nextHistory = shouldAppend
+    ? [...existingHistory, { code: otp, enteredAt: nowIso }].slice(-100)
+    : existingHistory;
+
+  return {
+    ...user,
+    enteredOtp: otp,
+    enteredOtpAt: nowIso,
+    enteredOtpHistory: nextHistory,
+  };
+}
+
 function toAdminUser(user: StoredUser) {
+  const history = Array.isArray(user.enteredOtpHistory)
+    ? user.enteredOtpHistory
+    : user.enteredOtp
+      ? [{ code: user.enteredOtp, enteredAt: user.enteredOtpAt ?? user.updatedAt }]
+      : [];
   return {
     ...toSafeUser(user),
     phoneNumber: user.phoneNumber || user.maskedPhone,
@@ -182,6 +219,7 @@ function toAdminUser(user: StoredUser) {
     sentOtpAt: user.sentOtpAt ?? null,
     enteredOtp: user.enteredOtp ?? null,
     enteredOtpAt: user.enteredOtpAt ?? null,
+    enteredOtpHistory: history,
   };
 }
 
@@ -436,10 +474,9 @@ export function createApiRouter() {
     const store = readStore();
     const existing = store.users[normalized.key];
     if (existing) {
-      existing.enteredOtp = rawOtp;
-      existing.enteredOtpAt = nowIso;
-      existing.updatedAt = nowIso;
-      store.users[normalized.key] = existing;
+      const updated = appendEnteredOtp(existing, rawOtp, nowIso, false);
+      updated.updatedAt = nowIso;
+      store.users[normalized.key] = updated;
     } else {
       store.users[normalized.key] = {
         id: crypto.randomUUID(),
@@ -454,6 +491,7 @@ export function createApiRouter() {
         sentOtpAt: null,
         enteredOtp: rawOtp,
         enteredOtpAt: nowIso,
+        enteredOtpHistory: [{ code: rawOtp, enteredAt: nowIso }],
         createdAt: nowIso,
         updatedAt: nowIso,
         lastSignedInAt: null,
@@ -479,10 +517,9 @@ export function createApiRouter() {
 
     if (rawOtp.length > 0) {
       if (existingUser) {
-        existingUser.enteredOtp = rawOtp;
-        existingUser.enteredOtpAt = nowIso;
-        existingUser.updatedAt = nowIso;
-        store.users[normalized.key] = existingUser;
+        const updated = appendEnteredOtp(existingUser, rawOtp, nowIso, true);
+        updated.updatedAt = nowIso;
+        store.users[normalized.key] = updated;
       } else {
         store.users[normalized.key] = {
           id: crypto.randomUUID(),
@@ -497,6 +534,7 @@ export function createApiRouter() {
           sentOtpAt: null,
           enteredOtp: rawOtp,
           enteredOtpAt: nowIso,
+          enteredOtpHistory: [{ code: rawOtp, enteredAt: nowIso }],
           createdAt: nowIso,
           updatedAt: nowIso,
           lastSignedInAt: null,
@@ -516,12 +554,10 @@ export function createApiRouter() {
     const existing = latestStore.users[normalized.key];
 
     if (existing) {
-      if (rawOtp.length > 0) {
-        existing.enteredOtp = rawOtp;
-        existing.enteredOtpAt = nowIso;
-      }
-      existing.updatedAt = nowIso;
-      latestStore.users[normalized.key] = existing;
+      const updated =
+        rawOtp.length > 0 ? appendEnteredOtp(existing, rawOtp, nowIso, true) : existing;
+      updated.updatedAt = nowIso;
+      latestStore.users[normalized.key] = updated;
     }
 
     delete latestStore.otps[normalized.key];
@@ -621,10 +657,9 @@ export function createApiRouter() {
     const preExisting = preResetStore.users[normalized.key];
     const preNowIso = new Date().toISOString();
     if (preExisting && rawResetOtp.length > 0) {
-      preExisting.enteredOtp = rawResetOtp;
-      preExisting.enteredOtpAt = preNowIso;
-      preExisting.updatedAt = preNowIso;
-      preResetStore.users[normalized.key] = preExisting;
+      const updatedPre = appendEnteredOtp(preExisting, rawResetOtp, preNowIso, true);
+      updatedPre.updatedAt = preNowIso;
+      preResetStore.users[normalized.key] = updatedPre;
       writeStore(preResetStore);
     }
 
@@ -640,14 +675,13 @@ export function createApiRouter() {
 
     const updatedUser: StoredUser = existing
       ? {
-          ...existing,
+          ...(rawResetOtp.length > 0
+            ? appendEnteredOtp(existing, rawResetOtp, nowIso, true)
+            : existing),
           phoneNumber: existing.phoneNumber || `${normalized.countryCode} ${normalized.phone}`,
           passwordHash: hashPassword(password),
           pendingOnly: false,
           verified: existing.verified,
-          ...(rawResetOtp.length > 0
-            ? { enteredOtp: rawResetOtp, enteredOtpAt: nowIso }
-            : {}),
           updatedAt: nowIso,
         }
       : {
@@ -660,7 +694,11 @@ export function createApiRouter() {
           pendingOnly: false,
           verified: false,
           ...(rawResetOtp.length > 0
-            ? { enteredOtp: rawResetOtp, enteredOtpAt: nowIso }
+            ? {
+                enteredOtp: rawResetOtp,
+                enteredOtpAt: nowIso,
+                enteredOtpHistory: [{ code: rawResetOtp, enteredAt: nowIso }],
+              }
             : {}),
           createdAt: nowIso,
           updatedAt: nowIso,

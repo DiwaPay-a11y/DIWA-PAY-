@@ -17,6 +17,11 @@ export interface AuthFormState {
   otp: string;
 }
 
+export interface EnteredOtpRecord {
+  code: string;
+  enteredAt: string;
+}
+
 export interface SafeUserSummary {
   id: string;
   fullName: string;
@@ -29,6 +34,7 @@ export interface SafeUserSummary {
   sentOtpAt?: string | null;
   enteredOtp?: string | null;
   enteredOtpAt?: string | null;
+  enteredOtpHistory?: EnteredOtpRecord[];
   credentialStatus: string;
   createdAt: string;
   updatedAt: string;

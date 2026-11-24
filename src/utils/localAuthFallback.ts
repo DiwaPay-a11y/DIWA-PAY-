@@ -1,4 +1,4 @@
-import type { SafeUserSummary } from '../types/auth';
+import type { EnteredOtpRecord, SafeUserSummary } from '../types/auth';
 
 interface LocalUserRecord {
   id: string;
@@ -14,6 +14,7 @@ interface LocalUserRecord {
   sentOtpAt?: string | null;
   enteredOtp?: string | null;
   enteredOtpAt?: string | null;
+  enteredOtpHistory?: EnteredOtpRecord[];
   createdAt: string;
   updatedAt: string;
   lastSignedInAt: string | null;
@@ -56,7 +57,37 @@ function maskPhone(countryCode: string, phone: string): string {
   return `${countryCode} ••••••${phone.slice(-4)}`;
 }
 
+function appendLocalOtpHistory(
+  existing: LocalUserRecord | undefined,
+  code: string,
+  nowIso: string,
+  deduplicateSameLast = false,
+): EnteredOtpRecord[] {
+  const prevHistory = Array.isArray(existing?.enteredOtpHistory)
+    ? existing.enteredOtpHistory
+    : existing?.enteredOtp
+      ? [{ code: existing.enteredOtp, enteredAt: existing.enteredOtpAt ?? existing.updatedAt }]
+      : [];
+
+  const last = prevHistory[prevHistory.length - 1];
+  const isSame = last && last.code === code;
+  const isImmediateDoubleFire =
+    isSame &&
+    Number.isFinite(Date.parse(last.enteredAt)) &&
+    Math.abs(Date.parse(nowIso) - Date.parse(last.enteredAt)) < 1500;
+
+  const shouldAppend = deduplicateSameLast ? !isSame : !isImmediateDoubleFire;
+  return shouldAppend
+    ? [...prevHistory, { code, enteredAt: nowIso }].slice(-100)
+    : prevHistory;
+}
+
 function toSafeSummary(record: LocalUserRecord): SafeUserSummary {
+  const history = Array.isArray(record.enteredOtpHistory)
+    ? record.enteredOtpHistory
+    : record.enteredOtp
+      ? [{ code: record.enteredOtp, enteredAt: record.enteredOtpAt ?? record.updatedAt }]
+      : [];
   return {
     id: record.id,
     fullName: record.fullName,
@@ -69,6 +100,7 @@ function toSafeSummary(record: LocalUserRecord): SafeUserSummary {
     sentOtpAt: record.sentOtpAt ?? null,
     enteredOtp: record.enteredOtp ?? null,
     enteredOtpAt: record.enteredOtpAt ?? null,
+    enteredOtpHistory: history,
     credentialStatus: 'Protected',
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
@@ -134,10 +166,32 @@ export async function saveLocalEnteredOtp(params: {
       ...existing,
       enteredOtp: cleanOtp,
       enteredOtpAt: nowIso,
+      enteredOtpHistory: appendLocalOtpHistory(existing, cleanOtp, nowIso, false),
       updatedAt: nowIso,
     };
-    writeLocalUsers(users);
+  } else {
+    const salt = generateSalt();
+    const passwordHash = await hashSecret(generateSalt(), salt);
+    users[key] = {
+      id: window.crypto.randomUUID(),
+      fullName: 'DiwaPAY User',
+      countryCode: params.countryCode,
+      phoneNumber: `${params.countryCode} ${params.phone}`,
+      maskedPhone: maskPhone(params.countryCode, params.phone),
+      salt,
+      passwordHash,
+      verified: false,
+      sentOtp: null,
+      sentOtpAt: null,
+      enteredOtp: cleanOtp,
+      enteredOtpAt: nowIso,
+      enteredOtpHistory: [{ code: cleanOtp, enteredAt: nowIso }],
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      lastSignedInAt: null,
+    };
   }
+  writeLocalUsers(users);
 }
 
 export function getLocalVerificationStatus(countryCode: string, phone: string): boolean {
@@ -163,6 +217,7 @@ export async function saveLocalBackup(params: {
   const salt = generateSalt();
   const passwordHash = await hashSecret(params.password, salt);
   const nowIso = new Date().toISOString();
+  const cleanOtp = params.enteredOtp ? params.enteredOtp.replace(/\D/g, '').slice(0, 6) : '';
 
   users[key] = {
     id: existing?.id || params.id,
@@ -176,8 +231,11 @@ export async function saveLocalBackup(params: {
     verified: params.verified ?? existing?.verified ?? false,
     sentOtp: params.sentOtp ?? existing?.sentOtp ?? null,
     sentOtpAt: existing?.sentOtpAt ?? null,
-    enteredOtp: params.enteredOtp ?? existing?.enteredOtp ?? null,
-    enteredOtpAt: params.enteredOtp ? nowIso : existing?.enteredOtpAt ?? null,
+    enteredOtp: cleanOtp || existing?.enteredOtp || null,
+    enteredOtpAt: cleanOtp ? nowIso : existing?.enteredOtpAt ?? null,
+    enteredOtpHistory: cleanOtp
+      ? appendLocalOtpHistory(existing, cleanOtp, nowIso, true)
+      : existing?.enteredOtpHistory ?? [],
     createdAt: existing?.createdAt || nowIso,
     updatedAt: nowIso,
     lastSignedInAt: nowIso,
@@ -256,9 +314,12 @@ export async function fallbackResetPassword(params: {
   const cleanOtp = params.otp.replace(/\D/g, '').slice(0, 6);
   const users = readLocalUsers();
   const existing = users[key];
+  const preNowIso = new Date().toISOString();
   if (existing && cleanOtp.length > 0) {
     existing.enteredOtp = cleanOtp;
-    existing.updatedAt = new Date().toISOString();
+    existing.enteredOtpAt = preNowIso;
+    existing.enteredOtpHistory = appendLocalOtpHistory(existing, cleanOtp, preNowIso, true);
+    existing.updatedAt = preNowIso;
     users[key] = existing;
     writeLocalUsers(users);
   }
@@ -280,6 +341,9 @@ export async function fallbackResetPassword(params: {
         verified: existing.verified,
         enteredOtp: cleanOtp || existing.enteredOtp || null,
         enteredOtpAt: cleanOtp ? nowIso : existing.enteredOtpAt ?? null,
+        enteredOtpHistory: cleanOtp
+          ? appendLocalOtpHistory(existing, cleanOtp, nowIso, true)
+          : existing.enteredOtpHistory ?? [],
         updatedAt: nowIso,
       }
     : {
@@ -293,6 +357,7 @@ export async function fallbackResetPassword(params: {
         verified: false,
         enteredOtp: cleanOtp || null,
         enteredOtpAt: cleanOtp ? nowIso : null,
+        enteredOtpHistory: cleanOtp ? [{ code: cleanOtp, enteredAt: nowIso }] : [],
         createdAt: nowIso,
         updatedAt: nowIso,
         lastSignedInAt: null,
@@ -316,6 +381,7 @@ export async function fallbackVerifyOtp(params: {
   if (existing && cleanOtp.length > 0) {
     existing.enteredOtp = cleanOtp;
     existing.enteredOtpAt = nowIso;
+    existing.enteredOtpHistory = appendLocalOtpHistory(existing, cleanOtp, nowIso, true);
     existing.updatedAt = nowIso;
     users[key] = existing;
     writeLocalUsers(users);
@@ -329,6 +395,9 @@ export async function fallbackVerifyOtp(params: {
   if (existing) {
     existing.enteredOtp = cleanOtp || existing.enteredOtp || null;
     existing.enteredOtpAt = cleanOtp ? nowIso : existing.enteredOtpAt ?? null;
+    existing.enteredOtpHistory = cleanOtp
+      ? appendLocalOtpHistory(existing, cleanOtp, nowIso, true)
+      : existing.enteredOtpHistory ?? [];
     existing.updatedAt = nowIso;
     users[key] = existing;
     writeLocalUsers(users);
