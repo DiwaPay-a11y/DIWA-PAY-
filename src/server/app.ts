@@ -18,13 +18,25 @@ const ALLOWED_COUNTRY_CODES = new Set(['+91', '+1', '+44', '+971', '+65']);
 const PHONE_REGEX = /^\d{10}$/;
 const PIN_REGEX = /^\d{4,8}$/;
 const OTP_REGEX = /^\d{6}$/;
-const OTP_TTL_MS = 5 * 60 * 1000;
+const OTP_TTL_MS = 10 * 60 * 1000;
 const OTP_COOLDOWN_MS = 60 * 1000;
 const MAX_OTP_ATTEMPTS = 5;
+const ADMIN_MAX_FAILED_ATTEMPTS = 5;
+const ADMIN_LOCKOUT_MS = 15 * 60 * 1000;
 const FIREBASE_PROJECT_ID = 'gen-lang-client-0359266966';
 const PRIMARY_ADMIN_EMAIL = 'monikaverma25595@gmail.com';
 const FIREBASE_CERTS_URL =
   'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com';
+
+const adminLoginAttempts = new Map<string, { count: number; lockedUntil: number }>();
+
+function getClientIp(req: Request): string {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.trim()) {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.ip || req.socket.remoteAddress || 'unknown';
+}
 
 // Precomputed valid scrypt hash format for constant-time missing-user checks
 const DUMMY_PASSWORD_HASH = hashPassword('diwapay-timing-dummy-value');
@@ -103,6 +115,7 @@ async function verifyFirebaseAdminIdToken(token: string): Promise<SessionTokenPa
     return {
       sub: payload.sub,
       role: 'admin',
+      authMethod: 'firebase',
       iat: payload.iat,
       exp: payload.exp,
     };
@@ -831,11 +844,42 @@ export function createApiRouter() {
     store.adminCredentialHash = hashPassword(passcode);
     writeStore(store);
 
-    const token = signToken({ sub: 'admin', role: 'admin' }, 60 * 60 * 4);
+    const token = signToken(
+      { sub: 'admin', role: 'admin', authMethod: 'passcode' },
+      60 * 60 * 4,
+    );
     res.status(201).json({ ok: true, token });
   });
 
   router.post('/admin/login', (req: Request, res: Response) => {
+    const clientIp = getClientIp(req);
+    const now = Date.now();
+    const attemptState = adminLoginAttempts.get(clientIp);
+    if (attemptState && attemptState.lockedUntil > now) {
+      const waitMinutes = Math.ceil((attemptState.lockedUntil - now) / 60000);
+      res.status(429).json({
+        ok: false,
+        error: `Too many failed attempts. Try again in ${waitMinutes} minute${waitMinutes === 1 ? '' : 's'}.`,
+      });
+      return;
+    }
+
+    const recordFailure = () => {
+      const prev = adminLoginAttempts.get(clientIp);
+      const nextCount = prev && prev.lockedUntil <= now ? prev.count + 1 : 1;
+      if (nextCount >= ADMIN_MAX_FAILED_ATTEMPTS) {
+        adminLoginAttempts.set(clientIp, {
+          count: 0,
+          lockedUntil: Date.now() + ADMIN_LOCKOUT_MS,
+        });
+      } else {
+        adminLoginAttempts.set(clientIp, {
+          count: nextCount,
+          lockedUntil: 0,
+        });
+      }
+    };
+
     const passcode = (req.body as Record<string, unknown>)?.passcode;
     if (typeof passcode !== 'string' || passcode.length === 0 || passcode.length > 128) {
       res.status(400).json({ ok: false, error: 'Enter your admin passcode.' });
@@ -845,10 +889,15 @@ export function createApiRouter() {
     const envPasscode = process.env.ADMIN_PASSCODE?.trim();
     if (envPasscode) {
       if (!verifyConstantTimeText(passcode, envPasscode)) {
+        recordFailure();
         res.status(401).json({ ok: false, error: 'Invalid admin passcode.' });
         return;
       }
-      const token = signToken({ sub: 'admin', role: 'admin' }, 60 * 60 * 4);
+      adminLoginAttempts.delete(clientIp);
+      const token = signToken(
+        { sub: 'admin', role: 'admin', authMethod: 'passcode' },
+        60 * 60 * 4,
+      );
       res.json({ ok: true, token });
       return;
     }
@@ -860,11 +909,16 @@ export function createApiRouter() {
     }
 
     if (!verifyPassword(passcode, store.adminCredentialHash)) {
+      recordFailure();
       res.status(401).json({ ok: false, error: 'Invalid admin passcode.' });
       return;
     }
 
-    const token = signToken({ sub: 'admin', role: 'admin' }, 60 * 60 * 4);
+    adminLoginAttempts.delete(clientIp);
+    const token = signToken(
+      { sub: 'admin', role: 'admin', authMethod: 'passcode' },
+      60 * 60 * 4,
+    );
     res.json({ ok: true, token });
   });
 
@@ -884,7 +938,7 @@ export function createApiRouter() {
   router.post(
     '/admin/change-passcode',
     requireRole('admin'),
-    (req: Request, res: Response) => {
+    (req: AuthenticatedRequest, res: Response) => {
       const envPasscode = process.env.ADMIN_PASSCODE?.trim();
       if (envPasscode) {
         res.status(409).json({
@@ -907,8 +961,12 @@ export function createApiRouter() {
       }
 
       const store = readStore();
-      if (store.adminCredentialHash) {
-        if (typeof currentPasscode !== 'string' || !verifyPassword(currentPasscode, store.adminCredentialHash)) {
+      const isFirebaseVerifiedAdmin = req.auth?.authMethod === 'firebase';
+      if (store.adminCredentialHash && !isFirebaseVerifiedAdmin) {
+        if (
+          typeof currentPasscode !== 'string' ||
+          !verifyPassword(currentPasscode, store.adminCredentialHash)
+        ) {
           res.status(401).json({ ok: false, error: 'Current admin password is incorrect.' });
           return;
         }
@@ -916,6 +974,7 @@ export function createApiRouter() {
 
       store.adminCredentialHash = hashPassword(newPasscode);
       writeStore(store);
+      adminLoginAttempts.clear();
       res.json({ ok: true });
     },
   );

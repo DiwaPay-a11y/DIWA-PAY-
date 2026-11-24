@@ -47,6 +47,7 @@ export function verifyConstantTimeText(input: string, expected: string): boolean
 export interface SessionTokenPayload {
   sub: string;
   role: 'user' | 'admin';
+  authMethod?: 'passcode' | 'firebase';
   maskedPhone?: string;
   iat: number;
   exp: number;

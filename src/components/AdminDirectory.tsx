@@ -151,15 +151,20 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
   const [signingIn, setSigningIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
-  // Server passcode admin state (works without Google popup or domain allowlist)
+  // Server passcode admin state (always verified on server)
   const [serverAdminConfigured, setServerAdminConfigured] = useState<boolean | null>(null);
+  const [serverAdminSource, setServerAdminSource] = useState<
+    'env' | 'claimed' | 'unconfigured' | null
+  >(null);
   const [serverAdminToken, setServerAdminToken] = useState<string | null>(null);
   const [passcodeInput, setPasscodeInput] = useState('');
+  const [confirmPasscodeInput, setConfirmPasscodeInput] = useState('');
+  const [showPasscodeInput, setShowPasscodeInput] = useState(false);
   const [passcodeSubmitting, setPasscodeSubmitting] = useState(false);
 
   const [serverAccounts, setServerAccounts] = useState<SafeUserSummary[]>([]);
   const [firestoreAccounts, setFirestoreAccounts] = useState<SafeUserSummary[]>([]);
-  const [localAccounts, setLocalAccounts] = useState<SafeUserSummary[]>(() => listLocalUsers());
+  const [localAccounts, setLocalAccounts] = useState<SafeUserSummary[]>([]);
   const accounts = React.useMemo(
     () => mergeAccounts(serverAccounts, mergeAccounts(firestoreAccounts, localAccounts)),
     [serverAccounts, firestoreAccounts, localAccounts],
@@ -200,6 +205,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
   const [showAdminPassModal, setShowAdminPassModal] = useState(false);
   const [currentAdminPass, setCurrentAdminPass] = useState('');
   const [nextAdminPass, setNextAdminPass] = useState('');
+  const [confirmNextAdminPass, setConfirmNextAdminPass] = useState('');
   const [showAdminPassText, setShowAdminPassText] = useState(false);
   const [adminPassSubmitting, setAdminPassSubmitting] = useState(false);
   const [adminPassError, setAdminPassError] = useState<string | null>(null);
@@ -211,15 +217,23 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
       .then(async (res) => {
         const ct = res.headers.get('content-type') || '';
         if (!ct.includes('application/json')) return null;
-        return (await res.json()) as { ok?: boolean; configured?: boolean };
+        return (await res.json()) as {
+          ok?: boolean;
+          configured?: boolean;
+          source?: 'env' | 'claimed' | 'unconfigured';
+        };
       })
       .then((data) => {
         if (active && data?.ok) {
           setServerAdminConfigured(Boolean(data.configured));
+          setServerAdminSource(data.source ?? null);
         }
       })
       .catch(() => {
-        if (active) setServerAdminConfigured(null);
+        if (active) {
+          setServerAdminConfigured(null);
+          setServerAdminSource(null);
+        }
       });
     return () => {
       active = false;
@@ -259,7 +273,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
   }, []);
 
   const getAdminBearerToken = React.useCallback(async (): Promise<string | null> => {
-    if (serverAdminToken && serverAdminToken !== 'local-fallback-admin') {
+    if (serverAdminToken) {
       return serverAdminToken;
     }
     if (user && isAdmin) {
@@ -274,14 +288,9 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
 
   const refreshServerAccounts = React.useCallback(
     async (silent = false) => {
-      setLocalAccounts(listLocalUsers());
-      if (serverAdminToken === 'local-fallback-admin') {
-        setServerAccounts([]);
-        setAccountsLoading(false);
-        return;
-      }
       const token = await getAdminBearerToken();
       if (!token) return;
+      setLocalAccounts(listLocalUsers());
       if (!silent) setAccountsLoading(true);
       try {
         const res = await fetch('/api/admin/accounts', {
@@ -380,8 +389,19 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
     e.preventDefault();
     setAuthError(null);
     if (!passcodeInput.trim()) {
-      setAuthError('Enter your admin passcode.');
+      setAuthError('Enter your admin password.');
       return;
+    }
+
+    if (serverAdminConfigured === false) {
+      if (passcodeInput.length < 8 || passcodeInput.length > 128) {
+        setAuthError('Admin password must be between 8 and 128 characters.');
+        return;
+      }
+      if (passcodeInput !== confirmPasscodeInput) {
+        setAuthError('Passwords do not match. Re-enter both fields.');
+        return;
+      }
     }
 
     setPasscodeSubmitting(true);
@@ -394,31 +414,24 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
       });
       const ct = res.headers.get('content-type') || '';
       if (!ct.includes('application/json')) {
-        if (passcodeInput.trim().length >= 8) {
-          setServerAdminConfigured(true);
-          setServerAdminToken('local-fallback-admin');
-          setPasscodeInput('');
-        } else {
-          setAuthError('Enter at least 8 characters to unlock local directory.');
-        }
+        setAuthError('Admin authentication server is unavailable.');
         return;
       }
       const data = (await res.json()) as { ok?: boolean; token?: string; error?: string };
       if (!res.ok || !data.ok || !data.token) {
-        setAuthError(data.error ?? 'Admin authentication failed.');
+        setAuthError(data.error ?? 'Invalid admin password.');
         return;
       }
       setServerAdminConfigured(true);
+      if (serverAdminSource === 'unconfigured' || serverAdminSource === null) {
+        setServerAdminSource('claimed');
+      }
       setServerAdminToken(data.token);
       setPasscodeInput('');
+      setConfirmPasscodeInput('');
+      setShowPasscodeInput(false);
     } catch {
-      if (passcodeInput.trim().length >= 8) {
-        setServerAdminConfigured(true);
-        setServerAdminToken('local-fallback-admin');
-        setPasscodeInput('');
-      } else {
-        setAuthError('Unable to reach admin server.');
-      }
+      setAuthError('Unable to reach admin server for password verification.');
     } finally {
       setPasscodeSubmitting(false);
     }
@@ -455,6 +468,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
     setServerAdminToken(null);
     setServerAccounts([]);
     setFirestoreAccounts([]);
+    setLocalAccounts([]);
     setSearchQuery('');
     setIsAdmin(false);
     setResetTarget(null);
@@ -791,12 +805,23 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
     setAdminPassError(null);
     setAdminPassSuccess(null);
 
-    if (!currentAdminPass) {
+    const signedInViaGoogleOnly = Boolean(user && isAdmin && !serverAdminToken);
+    if (!signedInViaGoogleOnly && !currentAdminPass) {
       setAdminPassError('Enter your current admin password.');
       return;
     }
     if (nextAdminPass.length < 8 || nextAdminPass.length > 128) {
       setAdminPassError('New admin password must be between 8 and 128 characters.');
+      return;
+    }
+    if (nextAdminPass !== confirmNextAdminPass) {
+      setAdminPassError('New passwords do not match.');
+      return;
+    }
+
+    const token = await getAdminBearerToken();
+    if (!token) {
+      setAdminPassError('Admin session expired. Sign in again.');
       return;
     }
 
@@ -806,10 +831,10 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${serverAdminToken}`,
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          currentPasscode: currentAdminPass,
+          ...(signedInViaGoogleOnly ? {} : { currentPasscode: currentAdminPass }),
           newPasscode: nextAdminPass,
         }),
       });
@@ -818,8 +843,11 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
         setAdminPassError(data.error ?? 'Unable to update admin password.');
         return;
       }
+      setServerAdminConfigured(true);
+      setServerAdminSource('claimed');
       setCurrentAdminPass('');
       setNextAdminPass('');
+      setConfirmNextAdminPass('');
       setAdminPassSuccess('Admin password updated successfully.');
     } catch {
       setAdminPassError('Unable to reach server.');
@@ -875,7 +903,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
               <span>Auth Screen</span>
             </button>
 
-            {serverAdminToken && serverAdminToken !== 'local-fallback-admin' && (
+            {hasAdminAccess && serverAdminSource !== 'env' && (
               <button
                 type="button"
                 onClick={() => {
@@ -883,6 +911,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                   setAdminPassSuccess(null);
                   setCurrentAdminPass('');
                   setNextAdminPass('');
+                  setConfirmNextAdminPass('');
                   setShowAdminPassModal(true);
                 }}
                 className="min-h-[40px] px-3 rounded-lg bg-white/10 hover:bg-white/15 text-sm font-medium text-[#FCE79C] inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
@@ -923,12 +952,12 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
               className="text-xl font-semibold text-[#111827]"
               style={{ fontFamily: 'var(--font-display)' }}
             >
-              Admin Sign In
+              {serverAdminConfigured === false ? 'Set Private Admin Password' : 'Admin Sign In'}
             </h1>
             <p className="text-sm text-[#4B5563] mt-2 leading-relaxed">
               {serverAdminConfigured === false
-                ? 'Set an admin passcode (min 8 characters) to view registered accounts.'
-                : 'Enter your admin passcode to view registered account records.'}
+                ? 'Create a private password (min 8 characters) that only you know to lock the Admin Panel.'
+                : 'Enter your private admin password to unlock the Admin Panel.'}
             </p>
 
             {authError && (
@@ -942,18 +971,42 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
             )}
 
             <form onSubmit={handlePasscodeSubmit} className="mt-5 space-y-3 text-left">
-              <input
-                type="password"
-                value={passcodeInput}
-                onChange={(e) => setPasscodeInput(e.target.value)}
-                placeholder={
-                  serverAdminConfigured === false
-                    ? 'Create admin passcode (8+ chars)'
-                    : 'Enter admin passcode'
-                }
-                aria-label="Admin passcode"
-                className="w-full h-12 px-4 rounded-xl border border-[#DCE1EB] bg-[#F8FAFC] text-sm text-[#111827] focus:outline-none focus:border-[#0052FF]"
-              />
+              <div className="h-12 px-3.5 rounded-xl border border-[#DCE1EB] bg-[#F8FAFC] focus-within:border-[#0052FF] flex items-center gap-2">
+                <input
+                  type={showPasscodeInput ? 'text' : 'password'}
+                  value={passcodeInput}
+                  onChange={(e) => setPasscodeInput(e.target.value)}
+                  autoComplete={serverAdminConfigured === false ? 'new-password' : 'current-password'}
+                  placeholder={
+                    serverAdminConfigured === false
+                      ? 'Create private password (8+ chars)'
+                      : 'Enter admin password'
+                  }
+                  aria-label="Admin password"
+                  className="flex-1 min-w-0 bg-transparent text-sm text-[#111827] focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPasscodeInput((prev) => !prev)}
+                  aria-label={showPasscodeInput ? 'Hide password' : 'Show password'}
+                  className="w-8 h-8 flex items-center justify-center text-[#6B7280] hover:text-[#111827] cursor-pointer"
+                >
+                  {showPasscodeInput ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+
+              {serverAdminConfigured === false && (
+                <input
+                  type={showPasscodeInput ? 'text' : 'password'}
+                  value={confirmPasscodeInput}
+                  onChange={(e) => setConfirmPasscodeInput(e.target.value)}
+                  autoComplete="new-password"
+                  placeholder="Confirm private password"
+                  aria-label="Confirm admin password"
+                  className="w-full h-12 px-4 rounded-xl border border-[#DCE1EB] bg-[#F8FAFC] text-sm text-[#111827] focus:outline-none focus:border-[#0052FF]"
+                />
+              )}
+
               <button
                 type="submit"
                 disabled={passcodeSubmitting}
@@ -966,7 +1019,7 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
                   </>
                 ) : (
                   <span>
-                    {serverAdminConfigured === false ? 'Create Passcode & Enter' : 'Unlock Directory'}
+                    {serverAdminConfigured === false ? 'Lock & Unlock Directory' : 'Unlock Directory'}
                   </span>
                 )}
               </button>
@@ -1866,37 +1919,63 @@ export const AdminDirectory: React.FC<AdminDirectoryProps> = ({ onNavigateHome }
             </div>
 
             <form onSubmit={handleChangeAdminPasscode} className="mt-4 space-y-3">
+              {!(user && isAdmin && !serverAdminToken) && (
+                <div className="h-12 px-3.5 rounded-xl border border-[#DCE1EB] bg-[#F8FAFC] focus-within:border-[#0052FF] flex items-center gap-2">
+                  <input
+                    type={showAdminPassText ? 'text' : 'password'}
+                    value={currentAdminPass}
+                    onChange={(e) => {
+                      setAdminPassError(null);
+                      setCurrentAdminPass(e.target.value);
+                    }}
+                    placeholder="Current admin password"
+                    aria-label="Current admin password"
+                    className="flex-1 min-w-0 bg-transparent text-sm text-[#111827] focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowAdminPassText((prev) => !prev)}
+                    aria-label={showAdminPassText ? 'Hide passwords' : 'Show passwords'}
+                    className="w-8 h-8 flex items-center justify-center text-[#6B7280] hover:text-[#111827] cursor-pointer"
+                  >
+                    {showAdminPassText ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              )}
+
               <div className="h-12 px-3.5 rounded-xl border border-[#DCE1EB] bg-[#F8FAFC] focus-within:border-[#0052FF] flex items-center gap-2">
                 <input
                   type={showAdminPassText ? 'text' : 'password'}
-                  value={currentAdminPass}
+                  value={nextAdminPass}
                   onChange={(e) => {
                     setAdminPassError(null);
-                    setCurrentAdminPass(e.target.value);
+                    setNextAdminPass(e.target.value);
                   }}
-                  placeholder="Current admin password"
-                  aria-label="Current admin password"
+                  placeholder="New admin password (min 8 chars)"
+                  aria-label="New admin password"
                   className="flex-1 min-w-0 bg-transparent text-sm text-[#111827] focus:outline-none"
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowAdminPassText((prev) => !prev)}
-                  aria-label={showAdminPassText ? 'Hide passwords' : 'Show passwords'}
-                  className="w-8 h-8 flex items-center justify-center text-[#6B7280] hover:text-[#111827] cursor-pointer"
-                >
-                  {showAdminPassText ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
+                {Boolean(user && isAdmin && !serverAdminToken) && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAdminPassText((prev) => !prev)}
+                    aria-label={showAdminPassText ? 'Hide passwords' : 'Show passwords'}
+                    className="w-8 h-8 flex items-center justify-center text-[#6B7280] hover:text-[#111827] cursor-pointer"
+                  >
+                    {showAdminPassText ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                )}
               </div>
 
               <input
                 type={showAdminPassText ? 'text' : 'password'}
-                value={nextAdminPass}
+                value={confirmNextAdminPass}
                 onChange={(e) => {
                   setAdminPassError(null);
-                  setNextAdminPass(e.target.value);
+                  setConfirmNextAdminPass(e.target.value);
                 }}
-                placeholder="New admin password (min 8 chars)"
-                aria-label="New admin password"
+                placeholder="Confirm new admin password"
+                aria-label="Confirm new admin password"
                 className="w-full h-12 px-3.5 rounded-xl border border-[#DCE1EB] bg-[#F8FAFC] text-sm text-[#111827] focus:outline-none focus:border-[#0052FF]"
               />
 
